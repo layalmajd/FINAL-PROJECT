@@ -399,6 +399,9 @@ Rules:
 Evaluation method:
 - Read the teacher assignment description, then evaluate EVERY criterion below.
 - Treat each criterion's teacher_requirement as a checklist. A criterion receives full score only if all explicit required parts are present and correct in the submission.
+- Give proportional partial credit for explicit required parts that are present, even if other parts of the same criterion are missing.
+- Do not use all-or-nothing scoring unless the teacher explicitly says the criterion is binary/pass-fail.
+- Use 0 for a criterion only when the submission has no relevant evidence for that criterion.
 - If an explicit requirement is missing, weak, incorrect, or unsupported, deduct proportionally and explain exactly what was missing.
 - Do not deduct for spelling, writing style, formatting, length, or presentation unless the teacher explicitly required that in the assignment description or criterion.
 

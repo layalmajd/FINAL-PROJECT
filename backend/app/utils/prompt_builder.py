@@ -41,6 +41,9 @@ Evaluation method:
 - Then evaluate the submission against EVERY listed criterion.
 - Treat each criterion description as a checklist of required evidence.
 - Award the full criterion score only when all explicit requirements for that criterion are met.
+- Award partial credit for the explicit requirements that are present, even if other parts of the same criterion are missing.
+- Do not use all-or-nothing scoring unless the teacher explicitly says the criterion is binary/pass-fail.
+- Use 0 for a criterion only when the submission has no relevant evidence for that criterion.
 - Deduct only for missing, weak, incorrect, or unsupported requirements from the assignment description or criteria.
 - Do not deduct for spelling, style, formatting, length, or other side issues unless the teacher explicitly included them in the assignment description or criteria.
 
