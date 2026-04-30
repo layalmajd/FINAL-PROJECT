@@ -192,12 +192,16 @@ class OllamaProvider(BaseAIProvider):
                 has_numeric_score = True
                 weighted_total += (criterion.weight / 100.0) * normalized_score
 
+            feedback = self._coerce_feedback(item.get("feedback"))
+            if not feedback:
+                raise ValidationError(f"Ollama response is missing feedback for '{criterion.name}'")
+
             normalized_scores.append(
                 {
                     "criterion_name": criterion.name,
                     "earned_points": earned_points,
                     "ai_score": normalized_score,
-                    "feedback": self._coerce_feedback(item.get("feedback")),
+                    "feedback": feedback,
                 }
             )
 
@@ -333,7 +337,7 @@ class OllamaProvider(BaseAIProvider):
         submission_word_count = len(payload.submission_text.split())
         criteria_lines = "\n".join(
             [
-                f'- "{criterion.name}" | manual_only={"yes" if criterion.is_manual else "no"} | weight_final_points={criterion.weight:.2f}'
+                f'- "{criterion.name}" | manual_only={"yes" if criterion.is_manual else "no"} | weight_percent={criterion.weight:.2f} | teacher_requirement={criterion.description or "No description provided."}'
                 for criterion in payload.criteria
             ]
         )
@@ -375,7 +379,7 @@ Return JSON only.
         submission_word_count = len(payload.submission_text.split())
         criteria_lines = "\n".join(
             [
-                f'- "{criterion.name}" | weight_final_points={criterion.weight:.2f} | manual_only={"yes" if criterion.is_manual else "no"} | description={criterion.description or "No description provided."}'
+                f'- "{criterion.name}" | weight_percent={criterion.weight:.2f} | manual_only={"yes" if criterion.is_manual else "no"} | teacher_requirement={criterion.description or "No description provided."}'
                 for criterion in payload.criteria
             ]
         )
@@ -385,11 +389,18 @@ You are a neutral, precise academic evaluator. Evaluate only the provided submis
 
 Assignment:
 - Name: {self._extract_assignment_name(payload.prompt)}
+- Teacher assignment description: {self._extract_assignment_description(payload.prompt)}
 - Grade scale: {payload.grade_scale}
 
 Rules:
 {grading_rules}
 - summary_feedback must be a non-empty string with 2 to 4 sentences.
+
+Evaluation method:
+- Read the teacher assignment description, then evaluate EVERY criterion below.
+- Treat each criterion's teacher_requirement as a checklist. A criterion receives full score only if all explicit required parts are present and correct in the submission.
+- If an explicit requirement is missing, weak, incorrect, or unsupported, deduct proportionally and explain exactly what was missing.
+- Do not deduct for spelling, writing style, formatting, length, or presentation unless the teacher explicitly required that in the assignment description or criterion.
 
 JSON shape:
 {{
@@ -438,3 +449,12 @@ Submission excerpt:
         if match:
             return match.group(1).strip()
         return "Academic submission"
+
+    def _extract_assignment_description(self, prompt: str) -> str:
+        match = re.search(r"^- Teacher assignment description:\s*(.+)$", prompt, re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r"^- Description:\s*(.+)$", prompt, re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+        return "No description provided."

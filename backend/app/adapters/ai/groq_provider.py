@@ -209,11 +209,15 @@ class GroqProvider(BaseAIProvider):
                 has_numeric_score = True
                 weighted_total += (criterion.weight / 100.0) * normalized_score
 
+            feedback = self._coerce_feedback(item.get("feedback"))
+            if not feedback:
+                raise ValidationError(f"Groq response is missing feedback for '{criterion.name}'")
+
             normalized_scores.append(
                 {
                     "criterion_name": criterion.name,
                     "ai_score": round(normalized_score, 2) if normalized_score is not None else None,
-                    "feedback": self._coerce_feedback(item.get("feedback")),
+                    "feedback": feedback,
                 }
             )
 
@@ -259,7 +263,7 @@ class GroqProvider(BaseAIProvider):
         submission_word_count = len(payload.submission_text.split())
         criteria_lines = "\n".join(
             [
-                f'- "{criterion.name}" | weight_final_points={criterion.weight:.2f} | manual_only={"yes" if criterion.is_manual else "no"} | description={criterion.description or "No description provided."}'
+                f'- "{criterion.name}" | weight_percent={criterion.weight:.2f} | manual_only={"yes" if criterion.is_manual else "no"} | teacher_requirement={criterion.description or "No description provided."}'
                 for criterion in payload.criteria
             ]
         )
@@ -269,11 +273,18 @@ You are a neutral, precise academic evaluator. Evaluate only the provided submis
 
 Assignment:
 - Name: {self._extract_assignment_name(payload.prompt)}
+- Teacher assignment description: {self._extract_assignment_description(payload.prompt)}
 - Grade scale: {payload.grade_scale}
 
 Rules:
 {grading_rules}
 - summary_feedback must be a non-empty string with 2 to 4 sentences.
+
+Evaluation method:
+- Read the teacher assignment description, then evaluate EVERY criterion below.
+- Treat each criterion's teacher_requirement as a checklist. A criterion receives full score only if all explicit required parts are present and correct in the submission.
+- If an explicit requirement is missing, weak, incorrect, or unsupported, deduct proportionally and explain exactly what was missing.
+- Do not deduct for spelling, writing style, formatting, length, or presentation unless the teacher explicitly required that in the assignment description or criterion.
 
 JSON shape:
 {{
@@ -322,6 +333,8 @@ Critical corrections:
 - total_score must exactly equal the weighted total calculated from all criterion ai_score values.
 - If the feedback says most requirements are met, do not give a 50% score unless the criterion is only partially met.
 - Give 100% for any criterion that fully satisfies its stated requirements.
+- Do not give a high score for a criterion if one of its explicit required parts is missing.
+- Every criterion must have specific feedback tied to the teacher assignment description or criterion.
 
 Original task:
 {base_prompt}
@@ -355,6 +368,15 @@ Return JSON only.
         if match:
             return match.group(1).strip()
         return "Academic submission"
+
+    def _extract_assignment_description(self, prompt: str) -> str:
+        match = re.search(r"^- Teacher assignment description:\s*(.+)$", prompt, re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r"^- Description:\s*(.+)$", prompt, re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+        return "No description provided."
 
     def _extract_retry_after_seconds(self, response, provider_error: str) -> int:
         retry_after_header = response.headers.get("retry-after")

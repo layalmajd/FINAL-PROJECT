@@ -159,7 +159,14 @@ class EvaluationService:
                     grade_scale=group.grade_scale,
                     is_manual=criterion.is_manual,
                 )
-                feedback = item.feedback if item else None
+                feedback = self._normalize_feedback_for_score(
+                    feedback=None if item is None else item.feedback,
+                    ai_score=ai_score,
+                    grade_scale=group.grade_scale,
+                    is_manual=criterion.is_manual,
+                    response_language=response_language,
+                    missing_provider_item=item is None,
+                )
                 created_score = await self.evaluation_repository.create_criterion_score(
                     CriterionScore(
                         result_id=evaluation_result.id,
@@ -416,6 +423,45 @@ class EvaluationService:
             effective_score = score.manual_score if score.manual_score is not None else score.ai_score or 0
             total += (float(criterion.weight) / 100.0) * float(effective_score)
         return round(total, 2)
+
+    def _normalize_feedback_for_score(
+        self,
+        *,
+        feedback: str | None,
+        ai_score: float | None,
+        grade_scale: int,
+        is_manual: bool,
+        response_language: str,
+        missing_provider_item: bool,
+    ) -> str:
+        cleaned = (feedback or "").strip()
+        if cleaned:
+            return cleaned
+
+        is_arabic = response_language == "ar"
+        if missing_provider_item:
+            return (
+                "لم يرجع مزود الذكاء الاصطناعي نتيجة لهذا المعيار، لذلك تم التعامل معه كغير مستوفى ويحتاج مراجعة."
+                if is_arabic
+                else "The AI provider did not return a result for this criterion, so it was treated as unmet and needs review."
+            )
+        if is_manual:
+            return (
+                "هذا معيار يدوي ويحتاج إدخال علامة من المدرّس."
+                if is_arabic
+                else "This is a manual-only criterion and needs an instructor-entered score."
+            )
+        if ai_score is not None and ai_score >= float(grade_scale):
+            return (
+                "تم استيفاء المعيار بالكامل ولم يتم الخصم"
+                if is_arabic
+                else "Criterion fully met, no deductions"
+            )
+        return (
+            "تم الخصم لأن نتيجة المزود أشارت إلى أن هذا المعيار غير مستوفى بالكامل، لكن لم يرجع سبباً تفصيلياً كافياً."
+            if is_arabic
+            else "Points were deducted because the provider result marked this criterion as not fully met, but did not return enough detailed reasoning."
+        )
 
     async def _log_usage(
         self,

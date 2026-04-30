@@ -18,9 +18,9 @@ def build_evaluation_prompt(
             "\n".join(
                 [
                     f"- Criterion: {criterion.name}",
-                    f"  Weight / final points: {float(criterion.weight):.2f}",
+                    f"  Weight in final grade: {float(criterion.weight):.2f}%",
                     f"  Manual only: {'yes' if criterion.is_manual else 'no'}",
-                    f"  Description: {criterion.description or 'No description provided.'}",
+                    f"  Teacher requirement: {criterion.description or 'No description provided.'}",
                 ]
             )
         )
@@ -30,11 +30,19 @@ You are a neutral, precise academic evaluator. Evaluate only the provided submis
 
 Assignment group:
 - Name: {group.name}
-- Description: {group.description or 'No description provided.'}
+- Teacher assignment description: {group.description or 'No description provided.'}
 - Grade scale: {group.grade_scale}
 
 Scoring requirements:
 {grading_rules}
+
+Evaluation method:
+- First, read the teacher assignment description.
+- Then evaluate the submission against EVERY listed criterion.
+- Treat each criterion description as a checklist of required evidence.
+- Award the full criterion score only when all explicit requirements for that criterion are met.
+- Deduct only for missing, weak, incorrect, or unsupported requirements from the assignment description or criteria.
+- Do not deduct for spelling, style, formatting, length, or other side issues unless the teacher explicitly included them in the assignment description or criteria.
 
 JSON shape:
 {{
