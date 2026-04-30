@@ -169,32 +169,31 @@ class OllamaProvider(BaseAIProvider):
                 None,
             )
             if match_index is None:
-                match_index = 0 if unused_items else None
-            if match_index is None:
-                raise ValidationError(f"Ollama response is missing a score entry for '{criterion.name}'")
-
-            item = unused_items.pop(match_index)
+                item = {}
+                missing_item = True
+            else:
+                item = unused_items.pop(match_index)
+                missing_item = False
             earned_points = self._coerce_score(item.get("earned_points", item.get("points")))
             normalized_score = self._coerce_score(item.get("ai_score"))
             if normalized_score is None and earned_points is not None and criterion.weight > 0:
                 earned_points = max(0.0, min(float(earned_points), float(criterion.weight)))
                 normalized_score = (earned_points / float(criterion.weight)) * payload.grade_scale
             if not criterion.is_manual and normalized_score is None:
-                raise ValidationError(
-                    f"Ollama must return a numeric ai_score for non-manual criterion '{criterion.name}'"
-                )
-            if normalized_score is not None and not 0 <= normalized_score <= payload.grade_scale:
-                raise ValidationError(
-                    f"Ollama returned ai_score خارج المجال المسموح للمعيار '{criterion.name}'"
-                )
+                normalized_score = 0.0
+            if normalized_score is not None:
+                normalized_score = max(0.0, min(float(normalized_score), float(payload.grade_scale)))
 
             if normalized_score is not None:
                 has_numeric_score = True
                 weighted_total += (criterion.weight / 100.0) * normalized_score
 
-            feedback = self._coerce_feedback(item.get("feedback"))
-            if not feedback:
-                raise ValidationError(f"Ollama response is missing feedback for '{criterion.name}'")
+            feedback = self._coerce_feedback(item.get("feedback")) or self._default_feedback(
+                criterion.name,
+                payload=payload,
+                missing_item=missing_item,
+                normalized_score=normalized_score,
+            )
 
             normalized_scores.append(
                 {
@@ -325,6 +324,26 @@ class OllamaProvider(BaseAIProvider):
         text = str(value).strip()
         return text or None
 
+    def _default_feedback(
+        self,
+        criterion_name: str,
+        *,
+        payload: EvaluationInput,
+        missing_item: bool,
+        normalized_score: float | None,
+    ) -> str:
+        if payload.response_language == "ar":
+            if missing_item:
+                return f"لم يرجع المزود نتيجة لهذا المعيار ({criterion_name})، لذلك تم إعطاؤه 0 ويحتاج مراجعة."
+            if normalized_score is not None and normalized_score >= payload.grade_scale:
+                return "تم استيفاء المعيار بالكامل ولم يتم الخصم"
+            return "لم يرجع المزود شرحاً كافياً لهذا المعيار، لذلك يجب مراجعة سبب الخصم."
+        if missing_item:
+            return f"The provider omitted this criterion ({criterion_name}); it was scored as 0 and needs review."
+        if normalized_score is not None and normalized_score >= payload.grade_scale:
+            return "Criterion fully met, no deductions"
+        return "The provider did not return enough feedback for this criterion; the deduction reason needs review."
+
     def _build_retry_prompt(
         self,
         payload: EvaluationInput,
@@ -402,6 +421,7 @@ Evaluation method:
 - Give proportional partial credit for explicit required parts that are present, even if other parts of the same criterion are missing.
 - Do not use all-or-nothing scoring unless the teacher explicitly says the criterion is binary/pass-fail.
 - Use 0 for a criterion only when the submission has no relevant evidence for that criterion.
+- Keep partial credit calibrated: vague mentions get low partial credit; high scores require explicit, usable details for most required parts.
 - If an explicit requirement is missing, weak, incorrect, or unsupported, deduct proportionally and explain exactly what was missing.
 - Do not deduct for spelling, writing style, formatting, length, or presentation unless the teacher explicitly required that in the assignment description or criterion.
 

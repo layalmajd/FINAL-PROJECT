@@ -24,12 +24,22 @@ CRITICAL SCORING LOGIC (READ CAREFULLY):
 - A non-full score is required when any explicit requirement in the assignment description or criterion is missing, weak, incorrect, or unsupported by the submission.
 - If a criterion has multiple required parts, score it proportionally by the fulfilled parts. Full score is allowed only when all required parts are present and correct.
 - Do NOT use all-or-nothing scoring unless the teacher explicitly says the criterion is binary/pass-fail.
-- If the submission includes some relevant evidence for a criterion, give partial credit for the fulfilled parts instead of assigning 0.
+- If the submission includes some relevant evidence for a criterion, give partial credit for the fulfilled parts instead of assigning 0, but vague mentions deserve low partial credit only.
 - Use 0 for a criterion only when there is no relevant evidence for that criterion, or the content is unrelated to the criterion.
 - For count-based requirements, estimate partial credit from the completed count and quality. Example: if the criterion asks for 6 functional requirements and 3 non-functional requirements, a submission with 3 functional and 1 weak non-functional requirement should receive partial credit, not 0.
 - If you deduct points (i.e. `ai_score < {grade_scale}`), the `feedback` MUST explicitly state the exact missing/incorrect requirement and must tie it to the teacher's assignment or criterion text.
 - Use the FULL range of scoring. Very poor submissions should get 0 or a very low number. Do not group all scores in a "safe" or lenient range.
 - Do not reward a submission for satisfying only one criterion while ignoring the rest. Every criterion must be judged independently.
+
+Score calibration for each criterion:
+- {grade_scale} / {grade_scale}: all explicit requirements are clearly satisfied.
+- 85-99%: nearly complete; only minor detail is missing.
+- 70-84%: most major requirements are satisfied, but one important part is missing or weak.
+- 50-69%: about half of the requirement is satisfied with some concrete evidence.
+- 25-49%: only a few relevant parts are present, or the answer is mostly vague.
+- 1-24%: minimal relevant mention without enough usable detail.
+- 0%: no relevant evidence for this criterion.
+- Do not give 70%+ for a criterion based on a vague mention. High scores require explicit, usable details.
 
 Output requirements:
 - Return valid JSON only, with no markdown fences and no extra commentary.

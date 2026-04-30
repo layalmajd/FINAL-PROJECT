@@ -185,11 +185,11 @@ class GroqProvider(BaseAIProvider):
                 None,
             )
             if match_index is None:
-                match_index = 0 if unused_items else None
-            if match_index is None:
-                raise ValidationError(f"Groq response is missing a score entry for '{criterion.name}'")
-
-            item = unused_items.pop(match_index)
+                item = {}
+                missing_item = True
+            else:
+                item = unused_items.pop(match_index)
+                missing_item = False
             normalized_score = self._coerce_score(item.get("ai_score"))
             if normalized_score is None:
                 earned_points = self._coerce_score(item.get("earned_points", item.get("points")))
@@ -197,21 +197,20 @@ class GroqProvider(BaseAIProvider):
                     bounded_points = max(0.0, min(float(earned_points), float(criterion.weight)))
                     normalized_score = (bounded_points / float(criterion.weight)) * payload.grade_scale
             if not criterion.is_manual and normalized_score is None:
-                raise ValidationError(
-                    f"Groq must return a numeric ai_score for non-manual criterion '{criterion.name}'"
-                )
-            if normalized_score is not None and not 0 <= normalized_score <= payload.grade_scale:
-                raise ValidationError(
-                    f"Groq returned ai_score خارج المجال المسموح للمعيار '{criterion.name}'"
-                )
+                normalized_score = 0.0
+            if normalized_score is not None:
+                normalized_score = max(0.0, min(float(normalized_score), float(payload.grade_scale)))
 
             if normalized_score is not None:
                 has_numeric_score = True
                 weighted_total += (criterion.weight / 100.0) * normalized_score
 
-            feedback = self._coerce_feedback(item.get("feedback"))
-            if not feedback:
-                raise ValidationError(f"Groq response is missing feedback for '{criterion.name}'")
+            feedback = self._coerce_feedback(item.get("feedback")) or self._default_feedback(
+                criterion.name,
+                payload=payload,
+                missing_item=missing_item,
+                normalized_score=normalized_score,
+            )
 
             normalized_scores.append(
                 {
@@ -224,15 +223,7 @@ class GroqProvider(BaseAIProvider):
         if any(not criterion.is_manual for criterion in payload.criteria) and not has_numeric_score:
             raise ValidationError("Groq response did not include any numeric scores")
 
-        parsed_total = self._coerce_score(parsed.get("total_score"))
         normalized_total = round(weighted_total, 2) if has_numeric_score else None
-        if parsed_total is not None and normalized_total is not None:
-            allowed_delta = max(1.0, payload.grade_scale * 0.03)
-            if abs(parsed_total - normalized_total) > allowed_delta:
-                raise ValidationError(
-                    f"Groq returned inconsistent scores: total_score={parsed_total}, "
-                    f"but criterion scores total {normalized_total}."
-                )
 
         normalized = dict(parsed)
         normalized["criterion_scores"] = normalized_scores
@@ -256,6 +247,26 @@ class GroqProvider(BaseAIProvider):
             return None
         text = str(value).strip()
         return text or None
+
+    def _default_feedback(
+        self,
+        criterion_name: str,
+        *,
+        payload: EvaluationInput,
+        missing_item: bool,
+        normalized_score: float | None,
+    ) -> str:
+        if payload.response_language == "ar":
+            if missing_item:
+                return f"لم يرجع المزود نتيجة لهذا المعيار ({criterion_name})، لذلك تم إعطاؤه 0 ويحتاج مراجعة."
+            if normalized_score is not None and normalized_score >= payload.grade_scale:
+                return "تم استيفاء المعيار بالكامل ولم يتم الخصم"
+            return "لم يرجع المزود شرحاً كافياً لهذا المعيار، لذلك يجب مراجعة سبب الخصم."
+        if missing_item:
+            return f"The provider omitted this criterion ({criterion_name}); it was scored as 0 and needs review."
+        if normalized_score is not None and normalized_score >= payload.grade_scale:
+            return "Criterion fully met, no deductions"
+        return "The provider did not return enough feedback for this criterion; the deduction reason needs review."
 
     def _build_groq_prompt(self, payload: EvaluationInput, *, max_submission_chars: int) -> str:
         language_label = "Arabic" if payload.response_language == "ar" else "English"
@@ -286,6 +297,7 @@ Evaluation method:
 - Give proportional partial credit for explicit required parts that are present, even if other parts of the same criterion are missing.
 - Do not use all-or-nothing scoring unless the teacher explicitly says the criterion is binary/pass-fail.
 - Use 0 for a criterion only when the submission has no relevant evidence for that criterion.
+- Keep partial credit calibrated: vague mentions get low partial credit; high scores require explicit, usable details for most required parts.
 - If an explicit requirement is missing, weak, incorrect, or unsupported, deduct proportionally and explain exactly what was missing.
 - Do not deduct for spelling, writing style, formatting, length, or presentation unless the teacher explicitly required that in the assignment description or criterion.
 
@@ -339,6 +351,7 @@ Critical corrections:
 - Do not give a high score for a criterion if one of its explicit required parts is missing.
 - Do give partial credit when some required parts are present. Do not turn a partially met criterion into 0.
 - Use 0 only when there is no relevant evidence for that criterion.
+- Do not give 70%+ for a criterion based on vague mentions. High scores require explicit, usable details.
 - Every criterion must have specific feedback tied to the teacher assignment description or criterion.
 
 Original task:
