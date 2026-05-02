@@ -5,6 +5,13 @@ from httpx import HTTPError, HTTPStatusError
 from app.adapters.ai.base import BaseAIProvider, EvaluationInput, LimitRiskEstimate
 from app.core.exceptions import ExternalServiceError, ValidationError
 from app.models.enums import ProviderName
+from app.utils.evaluation_response_audit import (
+    append_audit_to_feedback,
+    append_cap_note,
+    audit_consistency_errors,
+    cap_score_by_explicit_evidence,
+    normalize_requirements_audit,
+)
 from app.utils.prompt_policy import build_grading_rules
 
 
@@ -201,9 +208,21 @@ class GroqProvider(BaseAIProvider):
             if normalized_score is not None:
                 normalized_score = max(0.0, min(float(normalized_score), float(payload.grade_scale)))
 
-            if normalized_score is not None:
-                has_numeric_score = True
-                weighted_total += (criterion.weight / 100.0) * normalized_score
+            audit_items = normalize_requirements_audit(
+                item.get("requirements_audit")
+                or item.get("requirement_audit")
+                or item.get("audit")
+                or item.get("checklist")
+            )
+            consistency_errors = audit_consistency_errors(
+                criterion_name=criterion.name,
+                audit_items=audit_items,
+                normalized_score=normalized_score,
+                grade_scale=float(payload.grade_scale),
+                is_manual=criterion.is_manual,
+            )
+            if consistency_errors:
+                raise ValidationError("; ".join(consistency_errors))
 
             feedback = self._coerce_feedback(item.get("feedback")) or self._default_feedback(
                 criterion.name,
@@ -211,12 +230,30 @@ class GroqProvider(BaseAIProvider):
                 missing_item=missing_item,
                 normalized_score=normalized_score,
             )
+            feedback = append_audit_to_feedback(
+                feedback,
+                audit_items,
+                response_language=payload.response_language,
+            )
+            normalized_score, cap_note = cap_score_by_explicit_evidence(
+                criterion_description=criterion.description,
+                submission_text=payload.submission_text,
+                normalized_score=normalized_score,
+                grade_scale=float(payload.grade_scale),
+                response_language=payload.response_language,
+            )
+            feedback = append_cap_note(feedback, cap_note)
+
+            if normalized_score is not None:
+                has_numeric_score = True
+                weighted_total += (criterion.weight / 100.0) * normalized_score
 
             normalized_scores.append(
                 {
                     "criterion_name": criterion.name,
                     "ai_score": round(normalized_score, 2) if normalized_score is not None else None,
                     "feedback": feedback,
+                    "requirements_audit": audit_items,
                 }
             )
 
@@ -297,6 +334,9 @@ Rules:
 Evaluation method:
 - Read the teacher assignment description, then evaluate EVERY criterion below.
 - Treat each criterion's teacher_requirement as a checklist. A criterion receives full score only if all explicit required parts are present and correct in the submission.
+- Break each criterion into atomic required items before scoring. Named items, counts, coverage categories, rules, and phrases after "including", "covering", or "with" must be checked separately.
+- Use only positive evidence from the submission. A heading, section title, criterion name, or generic sentence is not enough.
+- If the submission explicitly says something is missing, not provided, not explained, or will be done later, treat that as evidence of absence.
 - Give proportional partial credit for explicit required parts that are present, even if other parts of the same criterion are missing.
 - Do not use all-or-nothing scoring unless the teacher explicitly says the criterion is binary/pass-fail.
 - If one criterion completely fails, deduct only that criterion's weighted contribution and continue scoring the other criteria independently.
@@ -313,7 +353,15 @@ JSON shape:
     {{
       "criterion_name": "string",
       "ai_score": number | null,
-      "feedback": "string"
+      "feedback": "string",
+      "requirements_audit": [
+        {{
+          "requirement": "string",
+          "status": "met | partial | missing",
+          "evidence": "string",
+          "missing_or_weak_reason": "string"
+        }}
+      ]
     }}
   ]
 }}
@@ -358,6 +406,9 @@ Critical corrections:
 - If a criterion is completely failed, only that criterion should lose its weighted contribution; the other criteria must still be scored normally.
 - Do not give 70%+ for a criterion based on vague mentions. High scores require explicit, usable details.
 - Every criterion must have specific feedback tied to the teacher assignment description or criterion.
+- Every non-manual criterion must include requirements_audit with concrete evidence for met items.
+- If any requirements_audit item is partial or missing, the criterion cannot receive full score.
+- Negative statements such as "no real entities", "not provided", or "will be tested later" prove absence, not fulfillment.
 
 Original task:
 {base_prompt}

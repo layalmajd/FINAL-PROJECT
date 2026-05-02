@@ -40,6 +40,9 @@ Evaluation method:
 - First, read the teacher assignment description.
 - Then evaluate the submission against EVERY listed criterion.
 - Treat each criterion description as a checklist of required evidence.
+- Break each criterion into atomic required items before scoring. Named items, counts, coverage categories, rules, and phrases after "including", "covering", or "with" must be checked separately.
+- Use only positive evidence from the submission. A heading, section title, criterion name, or generic sentence is not enough.
+- If the submission explicitly says something is missing, not provided, not explained, or will be done later, treat that as evidence of absence.
 - Award the full criterion score only when all explicit requirements for that criterion are met.
 - Award partial credit for the explicit requirements that are present, even if other parts of the same criterion are missing.
 - Do not use all-or-nothing scoring unless the teacher explicitly says the criterion is binary/pass-fail.
@@ -57,7 +60,15 @@ JSON shape:
     {{
       "criterion_name": "string",
       "ai_score": number | null,
-      "feedback": "string"
+      "feedback": "string",
+      "requirements_audit": [
+        {{
+          "requirement": "string",
+          "status": "met | partial | missing",
+          "evidence": "string",
+          "missing_or_weak_reason": "string"
+        }}
+      ]
     }}
   ]
 }}

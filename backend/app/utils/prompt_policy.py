@@ -24,10 +24,16 @@ CRITICAL SCORING LOGIC (READ CAREFULLY):
 - A full score (`ai_score = {grade_scale}`) is completely acceptable and EXPECTED when the submission satisfies the assignment description and that criterion.
 - A non-full score is required when any explicit requirement in the assignment description or criterion is missing, weak, incorrect, or unsupported by the submission.
 - If a criterion has multiple required parts, score it proportionally by the fulfilled parts. Full score is allowed only when all required parts are present and correct.
+- Convert every criterion description into atomic required items before scoring. Named items, counts, coverage categories, rules, examples, and phrases after "including", "covering", or "with" are separate required items.
+- Evidence must come from the submission text itself. A heading, section title, criterion name, or generic mention is not enough evidence.
+- Negative or absence language in the submission is evidence of non-fulfillment, not fulfillment. Examples: "does not explain", "no real entities", "not provided", "will be tested later", "missing", or equivalent Arabic wording.
+- Do not infer that a required item exists from the project topic, assignment name, file name, or common sense. If the submission does not explicitly provide it, mark it missing or partial.
+- For named technical items such as tables, entities, fields, relationships, tests, or rules, full credit requires explicit usable details, not just the word itself.
 - Do NOT use all-or-nothing scoring unless the teacher explicitly says the criterion is binary/pass-fail.
 - If the submission includes some relevant evidence for a criterion, give partial credit for the fulfilled parts instead of assigning 0, but vague mentions deserve low partial credit only.
 - Do not assign 0 for an ordinary criterion unless the teacher explicitly states that this missing requirement must receive 0, or the whole submission is blank/unrelated. If a criterion has no usable evidence but no explicit zero rule, assign a very low score and explain the missing evidence.
 - For count-based requirements, estimate partial credit from the completed count and quality. Example: if the criterion asks for 6 functional requirements and 3 non-functional requirements, a submission with 3 functional and 1 weak non-functional requirement should receive partial credit, not 0.
+- For count-based requirements, full credit requires the requested count and sufficient quality. If the criterion asks for at least 4 test cases with expected results, a sentence like "the project will be tested later" earns only very low credit.
 - If one criterion is completely failed, only that criterion's weighted contribution should be lost or nearly lost; continue scoring all other criteria independently.
 - If you deduct points (i.e. `ai_score < {grade_scale}`), the `feedback` MUST explicitly state the exact missing/incorrect requirement and must tie it to the teacher's assignment or criterion text.
 - Use the FULL range of scoring. Very poor submissions should get 0 or a very low number. Do not group all scores in a "safe" or lenient range.
@@ -50,7 +56,11 @@ Output requirements:
 - Do not compute the weighted score yourself in the `ai_score` field. `ai_score` is strictly the fulfillment factor up to {grade_scale}. The system applies the criterion weights.
 - `criterion_scores` must include every criterion EXACTLY ONCE.
 - Every `criterion_scores` item must include a specific `feedback` string. For deductions, the feedback must explain the exact reason for lost points.
+- Every non-manual `criterion_scores` item MUST include `requirements_audit`, an array that lists the atomic required items you checked.
+- Each `requirements_audit` item must include: `requirement`, `status` ("met", "partial", or "missing"), `evidence`, and `missing_or_weak_reason`.
+- If `status` is "met", `evidence` must cite or closely paraphrase concrete submission content. Do not use negative statements as met evidence.
+- If any audit item is "partial" or "missing", the criterion cannot receive a full score. If a major required item is missing, the criterion should not receive a high score.
 - `summary_feedback` and every `feedback` in `criterion_scores` MUST be written in {language_label}.
-- Do NOT output extra fields not specified in the JSON shape.
+- Do NOT output extra fields other than the specified JSON shape.
 - If there is no deduction for a criterion, state: "تم استيفاء المعيار بالكامل ولم يتم الخصم" (if Arabic) or "Criterion fully met, no deductions" (if English).
 """.strip()

@@ -13,6 +13,13 @@ from app.adapters.ai.base import (
 from app.core.config import get_settings
 from app.core.exceptions import ExternalServiceError, ValidationError
 from app.models.enums import ProviderName
+from app.utils.evaluation_response_audit import (
+    append_audit_to_feedback,
+    append_cap_note,
+    audit_consistency_errors,
+    cap_score_by_explicit_evidence,
+    normalize_requirements_audit,
+)
 from app.utils.prompt_policy import build_grading_rules
 
 
@@ -184,9 +191,21 @@ class OllamaProvider(BaseAIProvider):
             if normalized_score is not None:
                 normalized_score = max(0.0, min(float(normalized_score), float(payload.grade_scale)))
 
-            if normalized_score is not None:
-                has_numeric_score = True
-                weighted_total += (criterion.weight / 100.0) * normalized_score
+            audit_items = normalize_requirements_audit(
+                item.get("requirements_audit")
+                or item.get("requirement_audit")
+                or item.get("audit")
+                or item.get("checklist")
+            )
+            consistency_errors = audit_consistency_errors(
+                criterion_name=criterion.name,
+                audit_items=audit_items,
+                normalized_score=normalized_score,
+                grade_scale=float(payload.grade_scale),
+                is_manual=criterion.is_manual,
+            )
+            if consistency_errors:
+                raise ValidationError("; ".join(consistency_errors))
 
             feedback = self._coerce_feedback(item.get("feedback")) or self._default_feedback(
                 criterion.name,
@@ -194,6 +213,23 @@ class OllamaProvider(BaseAIProvider):
                 missing_item=missing_item,
                 normalized_score=normalized_score,
             )
+            feedback = append_audit_to_feedback(
+                feedback,
+                audit_items,
+                response_language=payload.response_language,
+            )
+            normalized_score, cap_note = cap_score_by_explicit_evidence(
+                criterion_description=criterion.description,
+                submission_text=payload.submission_text,
+                normalized_score=normalized_score,
+                grade_scale=float(payload.grade_scale),
+                response_language=payload.response_language,
+            )
+            feedback = append_cap_note(feedback, cap_note)
+
+            if normalized_score is not None:
+                has_numeric_score = True
+                weighted_total += (criterion.weight / 100.0) * normalized_score
 
             normalized_scores.append(
                 {
@@ -201,6 +237,7 @@ class OllamaProvider(BaseAIProvider):
                     "earned_points": earned_points,
                     "ai_score": normalized_score,
                     "feedback": feedback,
+                    "requirements_audit": audit_items,
                 }
             )
 
@@ -252,6 +289,14 @@ class OllamaProvider(BaseAIProvider):
                     "earned_points": value.get("earned_points") if isinstance(value, dict) else None,
                     "ai_score": value.get("ai_score") if isinstance(value, dict) else value,
                     "feedback": value.get("feedback") if isinstance(value, dict) else None,
+                    "requirements_audit": (
+                        value.get("requirements_audit")
+                        or value.get("requirement_audit")
+                        or value.get("audit")
+                        or value.get("checklist")
+                        if isinstance(value, dict)
+                        else None
+                    ),
                 }
                 for name, value in alt_scores.items()
             ]
@@ -273,6 +318,12 @@ class OllamaProvider(BaseAIProvider):
                 "earned_points": value.get("earned_points"),
                 "ai_score": value.get("ai_score", value.get("score")),
                 "feedback": value.get("feedback"),
+                "requirements_audit": (
+                    value.get("requirements_audit")
+                    or value.get("requirement_audit")
+                    or value.get("audit")
+                    or value.get("checklist")
+                ),
             }
         return {
             "criterion_name": criterion_name,
@@ -377,6 +428,9 @@ Hard requirements:
 - Do not use null for any non-manual criterion.
 - summary_feedback must be a non-empty string with 2 to 4 sentences.
 - Use the exact key name criterion_scores as an array.
+- Every non-manual criterion must include requirements_audit with concrete evidence for met items.
+- If any requirements_audit item is partial or missing, the criterion cannot receive full score.
+- Negative statements such as "no real entities", "not provided", or "will be tested later" prove absence, not fulfillment.
 - Do not include markdown fences, explanations, or extra text.
 
 Criteria:
@@ -421,6 +475,9 @@ Rules:
 Evaluation method:
 - Read the teacher assignment description, then evaluate EVERY criterion below.
 - Treat each criterion's teacher_requirement as a checklist. A criterion receives full score only if all explicit required parts are present and correct in the submission.
+- Break each criterion into atomic required items before scoring. Named items, counts, coverage categories, rules, and phrases after "including", "covering", or "with" must be checked separately.
+- Use only positive evidence from the submission. A heading, section title, criterion name, or generic sentence is not enough.
+- If the submission explicitly says something is missing, not provided, not explained, or will be done later, treat that as evidence of absence.
 - Give proportional partial credit for explicit required parts that are present, even if other parts of the same criterion are missing.
 - Do not use all-or-nothing scoring unless the teacher explicitly says the criterion is binary/pass-fail.
 - If one criterion completely fails, deduct only that criterion's weighted contribution and continue scoring the other criteria independently.
@@ -437,7 +494,15 @@ JSON shape:
     {{
       "criterion_name": "string",
       "ai_score": number | null,
-      "feedback": "string"
+      "feedback": "string",
+      "requirements_audit": [
+        {{
+          "requirement": "string",
+          "status": "met | partial | missing",
+          "evidence": "string",
+          "missing_or_weak_reason": "string"
+        }}
+      ]
     }}
   ]
 }}

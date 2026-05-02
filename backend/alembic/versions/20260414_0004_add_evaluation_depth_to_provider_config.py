@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import inspect
 
 # revision identifiers, used by Alembic.
 revision: str = "20260414_0004"
@@ -18,6 +19,7 @@ depends_on: Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
     evaluation_depth = sa.Enum(
         "academic_professional",
         "academic_applied",
@@ -25,7 +27,10 @@ def upgrade() -> None:
         "general_research",
         name="evaluation_depth",
     )
-    evaluation_depth.create(op.get_bind(), checkfirst=True)
+    evaluation_depth.create(bind, checkfirst=True)
+    existing_columns = {column["name"] for column in inspect(bind).get_columns("ai_provider_configs")}
+    if "evaluation_depth" in existing_columns:
+        return
     op.add_column(
         "ai_provider_configs",
         sa.Column(
@@ -38,7 +43,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("ai_provider_configs", "evaluation_depth")
+    bind = op.get_bind()
+    existing_columns = {column["name"] for column in inspect(bind).get_columns("ai_provider_configs")}
+    if "evaluation_depth" in existing_columns:
+        op.drop_column("ai_provider_configs", "evaluation_depth")
     evaluation_depth = sa.Enum(
         "academic_professional",
         "academic_applied",
@@ -46,4 +54,4 @@ def downgrade() -> None:
         "general_research",
         name="evaluation_depth",
     )
-    evaluation_depth.drop(op.get_bind(), checkfirst=True)
+    evaluation_depth.drop(bind, checkfirst=True)

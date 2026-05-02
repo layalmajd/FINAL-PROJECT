@@ -1,5 +1,42 @@
 # Automated Project Evaluation System
 
+## One-command startup for teammates
+
+Prerequisite: install and open Docker Desktop.
+
+From the project root:
+
+```powershell
+docker compose up --build
+```
+
+Open the app:
+
+```text
+http://localhost:5173
+```
+
+Demo login created automatically on first startup:
+
+```text
+Email: demo@mentis.dev
+Password: DemoPass123!
+```
+
+The command starts PostgreSQL, runs backend migrations, creates the demo user if it does not already exist, starts the FastAPI backend on `http://localhost:8000`, and starts the Vite frontend on `http://localhost:5173`.
+
+To stop the project:
+
+```powershell
+docker compose down
+```
+
+To delete the local Docker database and uploaded files for a clean start:
+
+```powershell
+docker compose down -v
+```
+
 منصة تقييم مشاريع للمدرسين مبنية بـ React + Vite في الواجهة، و FastAPI + PostgreSQL في الخلفية.
 
 ## قبل الرفع على GitHub
