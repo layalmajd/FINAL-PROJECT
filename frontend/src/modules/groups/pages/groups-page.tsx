@@ -1,27 +1,30 @@
-﻿import { zodResolver } from "@hookform/resolvers/zod";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { AlertTriangle, Pencil, Plus, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useFieldArray, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { z } from "zod";
 
 import { PageHeader } from "@/components/layout/page-header";
+import { Badge } from "@/components/shared/badge";
 import { Button } from "@/components/shared/button";
 import { Card } from "@/components/shared/card";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Input } from "@/components/shared/input";
-import { Textarea } from "@/components/shared/textarea";
-import { Badge } from "@/components/shared/badge";
 import { PaginationControls } from "@/components/shared/pagination-controls";
+import { Textarea } from "@/components/shared/textarea";
 import { getUserFacingErrorMessage } from "@/lib/error-messages";
 import {
   createCriterion,
   createGroup,
+  deleteCriterion,
   deleteGroup,
   fetchGroups,
+  updateCriterion,
+  updateGroup,
 } from "@/services/groups";
 import type { AssignmentGroup } from "@/types/api";
 
@@ -34,6 +37,7 @@ const optionalWeightField = z.preprocess((value) => {
 }, z.number().positive().max(1000).optional());
 
 const criterionDraftSchema = z.object({
+  criterion_id: z.string().optional(),
   name: z.string().default(""),
   weight: optionalWeightField,
   description: z.string().default(""),
@@ -59,11 +63,6 @@ const schema = z
           criterion.is_manual,
       );
 
-    if (!activeCriteria.length) {
-      return;
-    }
-
-    let total = 0;
     for (const criterion of activeCriteria) {
       if (criterion.name.trim().length < 2) {
         ctx.addIssue({
@@ -78,18 +77,15 @@ const schema = z
           message: "groups.weightValidation",
           path: ["criteria", criterion.index, "weight"],
         });
-        continue;
       }
-      total += criterion.weight;
     }
-
-    // Weight validation is now done in handleCreateGroupSubmit to show error message
   });
 
 type FormValues = z.infer<typeof schema>;
 type CriterionDraft = FormValues["criteria"][number];
 
 const blankCriterion = (): CriterionDraft => ({
+  criterion_id: undefined,
   name: "",
   weight: undefined,
   description: "",
@@ -99,29 +95,79 @@ const blankCriterion = (): CriterionDraft => ({
 const hasCriterionContent = (criterion: CriterionDraft) =>
   Boolean(
     criterion.name.trim() ||
-    criterion.description.trim() ||
-    criterion.weight !== undefined ||
-    criterion.is_manual,
+      criterion.description.trim() ||
+      criterion.weight !== undefined ||
+      criterion.is_manual,
   );
+
+const toFormValues = (group: AssignmentGroup): FormValues => ({
+  name: group.name,
+  description: group.description ?? "",
+  grade_scale: group.grade_scale,
+  is_active: group.is_active,
+  criteria:
+    group.criteria?.length
+      ? [...group.criteria]
+          .sort((left, right) => left.sort_order - right.sort_order)
+          .map((criterion) => ({
+            criterion_id: criterion.id,
+            name: criterion.name,
+            weight: criterion.weight,
+            description: criterion.description ?? "",
+            is_manual: criterion.is_manual,
+          }))
+      : [blankCriterion()],
+});
+
+const blankFormValues = (): FormValues => ({
+  name: "",
+  description: "",
+  grade_scale: 100,
+  is_active: true,
+  criteria: [blankCriterion()],
+});
 
 export function GroupsPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(5);
-  const [groupPendingDelete, setGroupPendingDelete] =
-    useState<AssignmentGroup | null>(null);
+  const [editingGroup, setEditingGroup] = useState<AssignmentGroup | null>(null);
+  const [pendingEditValues, setPendingEditValues] = useState<FormValues | null>(null);
+  const [groupPendingDelete, setGroupPendingDelete] = useState<AssignmentGroup | null>(null);
   const [showWeightError, setShowWeightError] = useState(false);
+
   const groupsQuery = useQuery({
     queryKey: ["groups"],
     queryFn: fetchGroups,
   });
 
+  const form = useForm<FormValues>({
+    resolver: zodResolver(schema),
+    defaultValues: blankFormValues(),
+  });
+  const { fields, append, remove, replace } = useFieldArray({
+    control: form.control,
+    name: "criteria",
+  });
+
+  const criteriaValues = form.watch("criteria");
+  const gradeScale = form.watch("grade_scale");
+  const activeCriteria = criteriaValues.filter(hasCriterionContent);
+  const activeCriteriaCount = activeCriteria.length;
+  const criteriaTotal =
+    Math.round(
+      activeCriteria.reduce((sum, criterion) => sum + (Number(criterion.weight) || 0), 0) * 100,
+    ) / 100;
+  const isWeightValid =
+    activeCriteriaCount > 0 && Math.round(criteriaTotal * 100) / 100 === Number(gradeScale);
+
   const totalGroups = groupsQuery.data?.length ?? 0;
   const paginatedGroups = useMemo(() => {
     if (!groupsQuery.data) return [];
 
-    // Ensure the current page is valid when deleting items
     const maxPage = Math.max(1, Math.ceil(totalGroups / pageSize));
     if (page > maxPage) {
       setPage(maxPage);
@@ -131,61 +177,70 @@ export function GroupsPage() {
     return groupsQuery.data.slice(start, start + pageSize);
   }, [groupsQuery.data, page, pageSize, totalGroups]);
 
-  const form = useForm<FormValues>({
-    resolver: zodResolver(schema),
-    defaultValues: {
-      is_active: true,
-      grade_scale: 100,
-      criteria: [blankCriterion()],
-    },
-  });
-  const { fields, append, remove } = useFieldArray({
-    control: form.control,
-    name: "criteria",
-  });
-  const criteriaValues = form.watch("criteria");
-  const gradeScale = form.watch("grade_scale");
+  useEffect(() => {
+    const state = location.state as { editGroupId?: string } | null;
+    if (!state?.editGroupId || !groupsQuery.data?.length) {
+      return;
+    }
+    const group = groupsQuery.data.find((item) => item.id === state.editGroupId);
+    if (group) {
+      beginEditGroup(group);
+      navigate(location.pathname, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupsQuery.data, location.pathname, location.state, navigate]);
 
-  // Calculate active criteria count directly without useMemo
-  const activeCriteriaCount = criteriaValues.filter(hasCriterionContent).length;
+  const resetToCreateMode = () => {
+    setEditingGroup(null);
+    setPendingEditValues(null);
+    setShowWeightError(false);
+    form.reset(blankFormValues());
+    replace([blankCriterion()]);
+  };
 
-  // Calculate total weights directly without useMemo
-  const criteriaTotal =
-    Math.round(
-      criteriaValues.reduce(
-        (sum, criterion) => sum + (Number(criterion.weight) || 0),
-        0,
-      ) * 100,
-    ) / 100;
-  const mutation = useMutation({
+  function beginEditGroup(group: AssignmentGroup) {
+    setEditingGroup(group);
+    setPendingEditValues(null);
+    setShowWeightError(false);
+    const values = toFormValues(group);
+    form.reset(values);
+    replace(values.criteria);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  const invalidateGroupData = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["groups"] }),
+      queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] }),
+      queryClient.invalidateQueries({ queryKey: ["submissions"] }),
+      queryClient.invalidateQueries({ queryKey: ["submission-report"] }),
+      queryClient.invalidateQueries({ queryKey: ["all-evaluations"] }),
+    ]);
+  };
+
+  const createMutation = useMutation({
     mutationFn: async (values: FormValues) => {
       const group = await createGroup({
-        name: values.name,
-        description: values.description,
-        grade_scale: values.grade_scale,
+        name: values.name.trim(),
+        description: values.description?.trim() || undefined,
+        grade_scale: Number(values.grade_scale),
         is_active: values.is_active,
       });
-      const criteria = values.criteria
-        .filter(hasCriterionContent)
-        .map((criterion, index) => ({
-          name: criterion.name.trim(),
-          weight: Number(criterion.weight),
-          description: criterion.description.trim() || undefined,
-          is_manual: criterion.is_manual,
-          sort_order: index,
-        }));
-
+      const criteria = values.criteria.filter(hasCriterionContent);
       let createdCriteria = 0;
       try {
-        for (const criterion of criteria) {
-          await createCriterion(group.id, criterion);
+        for (const [index, criterion] of criteria.entries()) {
+          await createCriterion(group.id, {
+            name: criterion.name.trim(),
+            weight: Number(criterion.weight),
+            description: criterion.description.trim() || undefined,
+            is_manual: criterion.is_manual,
+            sort_order: index,
+          });
           createdCriteria += 1;
         }
       } catch (error) {
-        const message =
-          error instanceof Error && error.message
-            ? error.message
-            : t("common.retry");
+        const message = error instanceof Error && error.message ? error.message : t("common.retry");
         throw new Error(
           t("groups.criteriaCreatePartial", {
             count: createdCriteria,
@@ -197,14 +252,7 @@ export function GroupsPage() {
       return { createdCriteria };
     },
     onSuccess: ({ createdCriteria }) => {
-      setShowWeightError(false);
-      form.reset({
-        name: "",
-        description: "",
-        grade_scale: 100,
-        is_active: true,
-        criteria: [blankCriterion()],
-      });
+      resetToCreateMode();
       toast.success(
         createdCriteria
           ? t("groups.createWithCriteriaSuccess", { count: createdCriteria })
@@ -213,63 +261,136 @@ export function GroupsPage() {
     },
     onError: (error: Error) => toast.error(getUserFacingErrorMessage(error)),
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["groups"] });
+      void invalidateGroupData();
     },
   });
+
+  const updateMutation = useMutation({
+    mutationFn: async ({
+      group,
+      values,
+    }: {
+      group: AssignmentGroup;
+      values: FormValues;
+    }) => {
+      await updateGroup(group.id, {
+        name: values.name.trim(),
+        description: values.description?.trim() || null,
+        grade_scale: Number(values.grade_scale),
+        is_active: values.is_active,
+      });
+
+      const nextCriteria = values.criteria.filter(hasCriterionContent);
+      const nextExistingIds = new Set(
+        nextCriteria
+          .map((criterion) => criterion.criterion_id)
+          .filter((criterionId): criterionId is string => Boolean(criterionId)),
+      );
+      const previousCriteria = group.criteria ?? [];
+
+      for (const criterion of previousCriteria) {
+        if (!nextExistingIds.has(criterion.id)) {
+          await deleteCriterion(criterion.id);
+        }
+      }
+
+      for (const [index, criterion] of nextCriteria.entries()) {
+        const payload = {
+          name: criterion.name.trim(),
+          weight: Number(criterion.weight),
+          description: criterion.description.trim() || undefined,
+          is_manual: criterion.is_manual,
+          sort_order: index,
+        };
+        if (criterion.criterion_id) {
+          await updateCriterion(criterion.criterion_id, payload);
+        } else {
+          await createCriterion(group.id, payload);
+        }
+      }
+    },
+    onSuccess: async () => {
+      const editedGroupId = editingGroup?.id;
+      resetToCreateMode();
+      await invalidateGroupData();
+      if (editedGroupId) {
+        void queryClient.invalidateQueries({ queryKey: ["group", editedGroupId] });
+      }
+      toast.success(t("groups.updateSuccess"));
+    },
+    onError: (error: Error) => toast.error(getUserFacingErrorMessage(error)),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: deleteGroup,
     onSuccess: (_, deletedGroupId) => {
       setGroupPendingDelete(null);
+      if (editingGroup?.id === deletedGroupId) {
+        resetToCreateMode();
+      }
       queryClient.setQueryData(
         ["groups"],
         (currentGroups: Awaited<ReturnType<typeof fetchGroups>> | undefined) =>
-          currentGroups?.filter((group) => group.id !== deletedGroupId) ??
-          currentGroups,
+          currentGroups?.filter((group) => group.id !== deletedGroupId) ?? currentGroups,
       );
       toast.success(t("groups.deleteSuccess"));
     },
     onError: (error: Error) => toast.error(getUserFacingErrorMessage(error)),
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["groups"] });
-      void queryClient.invalidateQueries({ queryKey: ["dashboard-summary"] });
-      void queryClient.invalidateQueries({ queryKey: ["submissions"] });
-      void queryClient.invalidateQueries({ queryKey: ["submission-report"] });
-      void queryClient.invalidateQueries({ queryKey: ["all-evaluations"] });
+      void invalidateGroupData();
     },
   });
 
-  const handleDeleteGroup = (group: AssignmentGroup) => {
-    setGroupPendingDelete(group);
-  };
-
-  const confirmDeleteGroup = () => {
-    if (!groupPendingDelete) {
-      return;
-    }
-    deleteMutation.mutate(groupPendingDelete.id);
-  };
-
-  const handleCreateGroupSubmit = (values: FormValues) => {
-    const activeCriteria = values.criteria.filter(hasCriterionContent);
+  const validateWeights = (values: FormValues) => {
+    const active = values.criteria.filter(hasCriterionContent);
     const total =
-      Math.round(
-        activeCriteria.reduce((sum, c) => sum + (Number(c.weight) || 0), 0) *
-          100,
-      ) / 100;
+      Math.round(active.reduce((sum, criterion) => sum + (Number(criterion.weight) || 0), 0) * 100) /
+      100;
 
-    // Check if weights match grade scale
-    if (
-      activeCriteria.length > 0 &&
-      Math.round(total * 100) / 100 !== values.grade_scale
-    ) {
+    if (active.length > 0 && Math.round(total * 100) / 100 !== Number(values.grade_scale)) {
       setShowWeightError(true);
-      // Scroll to top to show error message
       window.scrollTo({ top: 0, behavior: "smooth" });
-      return;
+      return false;
     }
 
     setShowWeightError(false);
-    mutation.mutate(values);
+    return true;
+  };
+
+  const handleFormSubmit = (values: FormValues) => {
+    if (!validateWeights(values)) {
+      return;
+    }
+
+    if (!editingGroup) {
+      createMutation.mutate(values);
+      return;
+    }
+
+    if ((editingGroup.submissions_count ?? 0) > 0) {
+      setPendingEditValues(values);
+      return;
+    }
+
+    updateMutation.mutate({ group: editingGroup, values });
+  };
+
+  const applyPendingEdit = (reviewAfterSave = false) => {
+    if (!editingGroup || !pendingEditValues) {
+      return;
+    }
+    const groupId = editingGroup.id;
+    updateMutation.mutate(
+      { group: editingGroup, values: pendingEditValues },
+      {
+        onSuccess: () => {
+          if (reviewAfterSave) {
+            sessionStorage.setItem("activeGroupId", groupId);
+            navigate("/submissions");
+          }
+        },
+      },
+    );
   };
 
   return (
@@ -277,48 +398,62 @@ export function GroupsPage() {
       <PageHeader title={t("groups.title")} subtitle={t("groups.subtitle")} />
       <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
         <Card className="p-5">
-          <h3 className="mb-4 text-lg font-semibold">{t("common.create")}</h3>
-          <form
-            className="space-y-4"
-            onSubmit={form.handleSubmit(handleCreateGroupSubmit)}
-          >
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-semibold">
+                {editingGroup ? t("groups.editTitle") : t("common.create")}
+              </h3>
+              {editingGroup ? (
+                <p className="mt-1 text-xs text-foreground/60">
+                  {t("groups.editModeHint")}
+                </p>
+              ) : null}
+            </div>
+            {editingGroup ? (
+              <Button type="button" variant="ghost" onClick={resetToCreateMode}>
+                <X size={16} />
+                {t("common.cancel")}
+              </Button>
+            ) : null}
+          </div>
+
+          {editingGroup && (editingGroup.submissions_count ?? 0) > 0 ? (
+            <div className="mb-4 rounded-xl border border-amber-300/70 bg-amber-50 p-3 text-sm text-amber-900">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 shrink-0" size={18} />
+                <p>{t("groups.editExistingSubmissionsNotice")}</p>
+              </div>
+            </div>
+          ) : null}
+
+          <form className="space-y-4" onSubmit={form.handleSubmit(handleFormSubmit)}>
             <div className="space-y-2">
               <label className="text-sm font-medium">{t("groups.name")}</label>
               <Input {...form.register("name")} />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">
-                {t("groups.description")}
-              </label>
+              <label className="text-sm font-medium">{t("groups.description")}</label>
               <Textarea {...form.register("description")} />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">
-                {t("groups.gradeScale")}
-              </label>
-              <Input
-                {...form.register("grade_scale")}
-                type="number"
-                onWheel={(e) => e.currentTarget.blur()}
-              />
+              <label className="text-sm font-medium">{t("groups.gradeScale")}</label>
+              <Input {...form.register("grade_scale")} type="number" onWheel={(e) => e.currentTarget.blur()} />
             </div>
             <div className="space-y-4 rounded-2xl border border-border/70 p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h4 className="text-sm font-semibold">
-                    {t("groups.criteriaCreateTitle")}
+                    {editingGroup ? t("groups.criteriaTitle") : t("groups.criteriaCreateTitle")}
                   </h4>
                   <p className="text-xs text-foreground/60">
-                    {t("groups.criteriaCreateHint")}
+                    {editingGroup ? t("groups.criteriaEditHint") : t("groups.criteriaCreateHint")}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Badge>{`${t("groups.criteriaCount")}: ${activeCriteriaCount}`}</Badge>
                   <Badge
                     className={
-                      criteriaTotal === gradeScale
-                        ? "bg-emerald-100 text-emerald-700"
-                        : "bg-amber-100 text-amber-700"
+                      isWeightValid ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
                     }
                   >
                     {`${t("groups.weights")}: ${criteriaTotal}/${gradeScale}`}
@@ -326,28 +461,24 @@ export function GroupsPage() {
                 </div>
               </div>
 
-              {showWeightError &&
-                activeCriteriaCount > 0 &&
-                Math.round(criteriaTotal * 100) / 100 !== gradeScale && (
-                  <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive border border-destructive/30">
-                    <p className="font-semibold mb-1">
-                      {t("groups.weightTotalValidation")}
-                    </p>
-                    <p className="text-xs">
-                      {criteriaTotal < gradeScale
-                        ? t("groups.weightTooLow", {
-                            current: criteriaTotal,
-                            required: gradeScale,
-                            difference: gradeScale - criteriaTotal,
-                          })
-                        : t("groups.weightTooHigh", {
-                            current: criteriaTotal,
-                            required: gradeScale,
-                            difference: criteriaTotal - gradeScale,
-                          })}
-                    </p>
-                  </div>
-                )}
+              {showWeightError && activeCriteriaCount > 0 && (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                  <p className="mb-1 font-semibold">{t("groups.weightTotalValidation")}</p>
+                  <p className="text-xs">
+                    {criteriaTotal < Number(gradeScale)
+                      ? t("groups.weightTooLow", {
+                          current: criteriaTotal,
+                          required: gradeScale,
+                          difference: Number(gradeScale) - criteriaTotal,
+                        })
+                      : t("groups.weightTooHigh", {
+                          current: criteriaTotal,
+                          required: gradeScale,
+                          difference: criteriaTotal - Number(gradeScale),
+                        })}
+                  </p>
+                </div>
+              )}
 
               <div className="space-y-3">
                 {fields.map((field, index) => (
@@ -368,24 +499,16 @@ export function GroupsPage() {
 
                     <div className="grid gap-4 sm:grid-cols-[1.2fr_0.8fr]">
                       <div className="space-y-2">
-                        <label className="text-sm font-medium">
-                          {t("groups.criterionName")}
-                        </label>
+                        <label className="text-sm font-medium">{t("groups.criterionName")}</label>
                         <Input {...form.register(`criteria.${index}.name`)} />
-                        {form.formState.errors.criteria?.[index]?.name
-                          ?.message ? (
+                        {form.formState.errors.criteria?.[index]?.name?.message ? (
                           <p className="text-xs text-destructive">
-                            {t(
-                              form.formState.errors.criteria[index]?.name
-                                ?.message as string,
-                            )}
+                            {t(form.formState.errors.criteria[index]?.name?.message as string)}
                           </p>
                         ) : null}
                       </div>
                       <div className="space-y-2">
-                        <label className="text-sm font-medium">
-                          {t("groups.weight")}
-                        </label>
+                        <label className="text-sm font-medium">{t("groups.weight")}</label>
                         <Input
                           {...form.register(`criteria.${index}.weight`)}
                           type="number"
@@ -394,80 +517,46 @@ export function GroupsPage() {
                           onChange={(e) => {
                             form.setValue(
                               `criteria.${index}.weight`,
-                              e.target.value
-                                ? parseFloat(e.target.value)
-                                : undefined,
+                              e.target.value ? parseFloat(e.target.value) : undefined,
                             );
                           }}
                         />
-                        {form.formState.errors.criteria?.[index]?.weight
-                          ?.message ? (
+                        {form.formState.errors.criteria?.[index]?.weight?.message ? (
                           <p className="text-xs text-destructive">
-                            {t(
-                              form.formState.errors.criteria[index]?.weight
-                                ?.message as string,
-                            )}
+                            {t(form.formState.errors.criteria[index]?.weight?.message as string)}
                           </p>
                         ) : null}
                       </div>
                     </div>
 
                     <div className="mt-4 space-y-2">
-                      <label className="text-sm font-medium">
-                        {t("groups.description")}
-                      </label>
-                      <Textarea
-                        {...form.register(`criteria.${index}.description`)}
-                        className="min-h-20"
-                      />
+                      <label className="text-sm font-medium">{t("groups.description")}</label>
+                      <Textarea {...form.register(`criteria.${index}.description`)} className="min-h-20" />
                     </div>
 
                     <label className="mt-4 flex items-center gap-3 text-sm">
-                      <input
-                        {...form.register(`criteria.${index}.is_manual`)}
-                        type="checkbox"
-                        className="size-4"
-                      />
+                      <input {...form.register(`criteria.${index}.is_manual`)} type="checkbox" className="size-4" />
                       {t("groups.manual")}
                     </label>
                   </div>
                 ))}
               </div>
 
-              <div className="space-y-2">
-                <Button
-                  variant="ghost"
-                  type="button"
-                  onClick={() => append(blankCriterion())}
-                  className="w-full"
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <Plus size={16} />
-                    {t("groups.addCriterion")}
-                  </span>
-                </Button>
-                {Array.isArray(form.formState.errors.criteria) ? null : form
-                    .formState.errors.criteria?.message ? (
-                  <p className="text-xs text-destructive">
-                    {t(form.formState.errors.criteria.message as string)}
-                  </p>
-                ) : null}
-              </div>
+              <Button variant="ghost" type="button" onClick={() => append(blankCriterion())} className="w-full">
+                <Plus size={16} />
+                {t("groups.addCriterion")}
+              </Button>
             </div>
             <label className="flex items-center gap-3 text-sm">
-              <input
-                {...form.register("is_active")}
-                type="checkbox"
-                className="size-4"
-              />
+              <input {...form.register("is_active")} type="checkbox" className="size-4" />
               {t("groups.active")}
             </label>
-            <Button
-              className="w-full"
-              disabled={mutation.isPending}
-              type="submit"
-            >
-              {mutation.isPending ? t("common.loading") : t("common.create")}
+            <Button className="w-full" disabled={createMutation.isPending || updateMutation.isPending} type="submit">
+              {createMutation.isPending || updateMutation.isPending
+                ? t("common.loading")
+                : editingGroup
+                  ? t("groups.saveChanges")
+                  : t("common.create")}
             </Button>
           </form>
         </Card>
@@ -475,13 +564,11 @@ export function GroupsPage() {
         <div className="space-y-4">
           {paginatedGroups.length ? (
             paginatedGroups.map((group) => (
-              <Card key={group.id} className="p-5">
+              <Card key={group.id} className={editingGroup?.id === group.id ? "border-primary/50 p-5" : "p-5"}>
                 <div className="flex flex-col gap-4">
                   <div className="space-y-2">
                     <h3 className="text-lg font-semibold">{group.name}</h3>
-                    <p className="text-sm text-foreground/70">
-                      {group.description}
-                    </p>
+                    <p className="text-sm leading-7 text-foreground/70">{group.description}</p>
                   </div>
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                     <div className="flex flex-wrap gap-2">
@@ -489,23 +576,23 @@ export function GroupsPage() {
                       <Badge>{`${t("groups.criteriaCount")}: ${group.criteria?.length ?? 0}`}</Badge>
                       <Badge>{`${t("groups.weights")}: ${group.weights_total ?? 0}`}</Badge>
                       <Badge
-                        className={
-                          group.ready_for_evaluation
-                            ? "bg-emerald-100 text-emerald-700"
-                            : ""
-                        }
+                        className={group.ready_for_evaluation ? "bg-emerald-100 text-emerald-700" : ""}
                       >
-                        {group.ready_for_evaluation
-                          ? t("state.completed")
-                          : t("state.pending")}
+                        {group.ready_for_evaluation ? t("state.completed") : t("state.pending")}
                       </Badge>
                     </div>
                     <div className="flex flex-wrap gap-2 lg:shrink-0">
+                      <Button
+                        variant="secondary"
+                        type="button"
+                        className="min-w-28 whitespace-nowrap"
+                        onClick={() => beginEditGroup(group)}
+                      >
+                        <Pencil size={16} />
+                        {t("groups.edit")}
+                      </Button>
                       <Link to={`/groups/${group.id}`}>
-                        <Button
-                          variant="secondary"
-                          className="min-w-28 whitespace-nowrap"
-                        >
+                        <Button variant="secondary" className="min-w-28 whitespace-nowrap">
                           {t("groups.details")}
                         </Button>
                       </Link>
@@ -513,14 +600,10 @@ export function GroupsPage() {
                         variant="danger"
                         type="button"
                         className="min-w-28 whitespace-nowrap"
-                        onClick={() => handleDeleteGroup(group)}
-                        disabled={
-                          deleteMutation.isPending &&
-                          deleteMutation.variables === group.id
-                        }
+                        onClick={() => setGroupPendingDelete(group)}
+                        disabled={deleteMutation.isPending && deleteMutation.variables === group.id}
                       >
-                        {deleteMutation.isPending &&
-                        deleteMutation.variables === group.id
+                        {deleteMutation.isPending && deleteMutation.variables === group.id
                           ? t("common.loading")
                           : t("groups.delete")}
                       </Button>
@@ -530,10 +613,7 @@ export function GroupsPage() {
               </Card>
             ))
           ) : (
-            <EmptyState
-              title={t("groups.title")}
-              description={t("groups.empty")}
-            />
+            <EmptyState title={t("groups.title")} description={t("groups.empty")} />
           )}
 
           {totalGroups > 0 && (
@@ -548,14 +628,51 @@ export function GroupsPage() {
         </div>
       </div>
 
+      {pendingEditValues && editingGroup ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-sm">
+          <Card className="w-full max-w-xl p-6 shadow-2xl">
+            <div className="space-y-5">
+              <div className="space-y-2">
+                <h3 className="text-xl font-semibold">{t("groups.editImpactTitle")}</h3>
+                <p className="text-sm leading-7 text-foreground/75">
+                  {t("groups.editImpactDescription", {
+                    count: editingGroup.submissions_count ?? 0,
+                  })}
+                </p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Button type="button" onClick={() => applyPendingEdit(false)} disabled={updateMutation.isPending}>
+                  {updateMutation.isPending ? t("common.loading") : t("groups.keepExistingEvaluations")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => applyPendingEdit(true)}
+                  disabled={updateMutation.isPending}
+                >
+                  {t("groups.saveAndReviewReevaluation")}
+                </Button>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full"
+                onClick={() => setPendingEditValues(null)}
+                disabled={updateMutation.isPending}
+              >
+                {t("common.cancel")}
+              </Button>
+            </div>
+          </Card>
+        </div>
+      ) : null}
+
       {groupPendingDelete ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-sm">
           <Card className="w-full max-w-lg p-6 shadow-2xl">
             <div className="space-y-4">
               <div className="space-y-2">
-                <h3 className="text-xl font-semibold">
-                  {t("groups.deleteDialogTitle")}
-                </h3>
+                <h3 className="text-xl font-semibold">{t("groups.deleteDialogTitle")}</h3>
                 <p className="text-sm leading-7 text-foreground/75">
                   {t("groups.deleteConfirm", {
                     name: groupPendingDelete.name,
@@ -578,12 +695,10 @@ export function GroupsPage() {
                   variant="danger"
                   type="button"
                   className="sm:min-w-32"
-                  onClick={confirmDeleteGroup}
+                  onClick={() => deleteMutation.mutate(groupPendingDelete.id)}
                   disabled={deleteMutation.isPending}
                 >
-                  {deleteMutation.isPending
-                    ? t("common.loading")
-                    : t("groups.delete")}
+                  {deleteMutation.isPending ? t("common.loading") : t("groups.delete")}
                 </Button>
               </div>
             </div>

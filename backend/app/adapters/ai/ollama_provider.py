@@ -17,6 +17,7 @@ from app.utils.evaluation_response_audit import (
     append_audit_to_feedback,
     append_cap_note,
     audit_consistency_errors,
+    cap_score_by_audit_consistency,
     cap_score_by_explicit_evidence,
     normalize_requirements_audit,
 )
@@ -199,6 +200,14 @@ class OllamaProvider(BaseAIProvider):
                 or item.get("audit")
                 or item.get("checklist")
             )
+            normalized_score, audit_cap_note = cap_score_by_audit_consistency(
+                criterion_name=criterion.name,
+                audit_items=audit_items,
+                normalized_score=normalized_score,
+                grade_scale=float(payload.grade_scale),
+                is_manual=criterion.is_manual,
+                response_language=payload.response_language,
+            )
             consistency_errors = audit_consistency_errors(
                 criterion_name=criterion.name,
                 audit_items=audit_items,
@@ -220,6 +229,7 @@ class OllamaProvider(BaseAIProvider):
                 audit_items,
                 response_language=payload.response_language,
             )
+            feedback = append_cap_note(feedback, audit_cap_note)
             normalized_score, cap_note = cap_score_by_explicit_evidence(
                 criterion_description=criterion.description,
                 submission_text=payload.submission_text,

@@ -52,6 +52,9 @@ class SubmissionService:
     async def list_evaluatable_submission_ids(self, instructor_id: str, group_id: str):
         return await self.repository.list_evaluatable_ids_for_group(instructor_id, group_id)
 
+    async def list_reevaluatable_submission_ids(self, instructor_id: str, group_id: str):
+        return await self.repository.list_reevaluatable_ids_for_group(instructor_id, group_id)
+
     async def get_submission(self, instructor_id: str, submission_id: str):
         submission = await self.repository.get_by_id_for_instructor(submission_id, instructor_id)
         if not submission:

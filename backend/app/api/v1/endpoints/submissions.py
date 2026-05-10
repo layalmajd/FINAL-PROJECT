@@ -91,6 +91,19 @@ async def list_evaluatable_submission_ids(
     return SubmissionIdListResponse(items=submission_ids)
 
 
+@router.get("/reevaluatable-ids", response_model=SubmissionIdListResponse)
+async def list_reevaluatable_submission_ids(
+    group_id: str = Query(...),
+    current_instructor=Depends(get_current_instructor),
+    db: AsyncSession = Depends(get_db),
+):
+    submission_ids = await SubmissionService(db).list_reevaluatable_submission_ids(
+        current_instructor.id,
+        group_id,
+    )
+    return SubmissionIdListResponse(items=submission_ids)
+
+
 @router.get("/{submission_id}", response_model=SubmissionResponse)
 async def get_submission(
     submission_id: str,

@@ -65,7 +65,9 @@ class GroupRepository:
                 EvaluationCriterion.id == criterion_id,
                 AssignmentGroup.instructor_id == instructor_id,
             )
-            .options(selectinload(EvaluationCriterion.group))
+            .options(
+                selectinload(EvaluationCriterion.group).selectinload(AssignmentGroup.criteria)
+            )
         )
         return result.scalar_one_or_none()
 

@@ -52,6 +52,9 @@ function mapRawMessageToFriendlyText(rawMessage?: string | null) {
   if (includesAny(message, ["failed to fetch", "networkerror", "unable to connect", "load failed"])) {
     return translate("errors.network.unreachable");
   }
+  if (includesAny(message, ["invalid credentials"])) {
+    return translate("errors.auth.invalidCredentials");
+  }
   if (includesAny(message, ["unauthorized", "authentication failed", "invalid refresh token"])) {
     return translate("errors.auth.sessionExpired");
   }
@@ -198,6 +201,9 @@ function mapRawMessageToFriendlyText(rawMessage?: string | null) {
   }
   if (includesAny(message, ["evaluation cancelled by instructor"])) {
     return translate("errors.evaluation.cancelled");
+  }
+  if (includesAny(message, ["high score has no audit item marked as met"])) {
+    return translate("errors.evaluation.inconsistentAudit");
   }
 
   return null;

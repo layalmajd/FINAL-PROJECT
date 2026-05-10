@@ -28,6 +28,7 @@ import {
   canEvaluateSubmission,
   deleteSubmission,
   fetchEvaluatableSubmissionIds,
+  fetchReevaluatableSubmissionIds,
   fetchSubmissionReport,
   fetchSubmissions,
   previewSubmissionStudentIds,
@@ -160,6 +161,11 @@ export function SubmissionPage() {
     queryFn: () => fetchEvaluatableSubmissionIds(groupId),
     enabled: Boolean(groupId),
   });
+  const reevaluatableSubmissionIdsQuery = useQuery({
+    queryKey: ["submissions", groupId, "reevaluatable-ids"],
+    queryFn: () => fetchReevaluatableSubmissionIds(groupId),
+    enabled: Boolean(groupId),
+  });
   const reportQuery = useQuery({
     queryKey: [
       "submission-report",
@@ -236,6 +242,14 @@ export function SubmissionPage() {
   const evaluatableSubmissionIds = useMemo(
     () => evaluatableSubmissionIdsQuery.data?.items ?? [],
     [evaluatableSubmissionIdsQuery.data],
+  );
+  const reevaluatableSubmissionIds = useMemo(
+    () => reevaluatableSubmissionIdsQuery.data?.items ?? [],
+    [reevaluatableSubmissionIdsQuery.data],
+  );
+  const reevaluatableSubmissionIdSet = useMemo(
+    () => new Set(reevaluatableSubmissionIds),
+    [reevaluatableSubmissionIds],
   );
   const currentBatchSubmission = useMemo(
     () =>
@@ -374,7 +388,13 @@ export function SubmissionPage() {
   });
 
   const startBatchMutation = useMutation({
-    mutationFn: startBatchEvaluations,
+    mutationFn: ({
+      submissionIds,
+      includeCompleted = false,
+    }: {
+      submissionIds: string[];
+      includeCompleted?: boolean;
+    }) => startBatchEvaluations(submissionIds, includeCompleted),
   });
   const cancelBatchMutation = useMutation({
     mutationFn: cancelBatchEvaluations,
@@ -396,13 +416,20 @@ export function SubmissionPage() {
     },
   });
 
-  const queueEvaluations = async (submissionIds: string[]) => {
+  const queueEvaluations = async (submissionIds: string[], includeCompleted = false) => {
     if (!submissionIds.length) {
-      toast.error(t("submissions.noEvaluatableSubmissions"));
+      toast.error(
+        includeCompleted
+          ? t("submissions.noReevaluatableSubmissions")
+          : t("submissions.noEvaluatableSubmissions"),
+      );
       return;
     }
     try {
-      const result = await startBatchMutation.mutateAsync(submissionIds);
+      const result = await startBatchMutation.mutateAsync({
+        submissionIds,
+        includeCompleted,
+      });
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: ["evaluation-batch-status"],
@@ -497,12 +524,18 @@ export function SubmissionPage() {
   };
 
   const evaluateMutation = useMutation({
-    mutationFn: async (submissionId: string) => {
+    mutationFn: async ({
+      submissionId,
+      includeCompleted = false,
+    }: {
+      submissionId: string;
+      includeCompleted?: boolean;
+    }) => {
       setQueueingIds((current) =>
         Array.from(new Set([...current, submissionId])),
       );
       try {
-        await queueEvaluations([submissionId]);
+        await queueEvaluations([submissionId], includeCompleted);
       } finally {
         setQueueingIds((current) =>
           current.filter((item) => item !== submissionId),
@@ -517,10 +550,20 @@ export function SubmissionPage() {
       await queueEvaluations(evaluatableSubmissionIds);
     },
   });
+  const reEvaluateCompletedMutation = useMutation({
+    mutationFn: async () => {
+      await queueEvaluations(reevaluatableSubmissionIds, true);
+    },
+  });
   const isEvaluateAllBusy =
     startBatchMutation.isPending ||
     evaluateAllMutation.isPending ||
+    reEvaluateCompletedMutation.isPending ||
     evaluatableSubmissionIdsQuery.isFetching;
+  const isReEvaluateCompletedBusy =
+    startBatchMutation.isPending ||
+    reEvaluateCompletedMutation.isPending ||
+    reevaluatableSubmissionIdsQuery.isFetching;
   const evaluateAllButtonLabel = cancelBatchMutation.isPending
     ? t("common.loading")
     : batchStatus?.cancel_requested
@@ -537,6 +580,10 @@ export function SubmissionPage() {
       return;
     }
     evaluateAllMutation.mutate();
+  };
+
+  const handleReEvaluateCompletedClick = () => {
+    reEvaluateCompletedMutation.mutate();
   };
   const getSubmissionActionState = (submission: Submission) => {
     if (queueingIds.includes(submission.id)) {
@@ -578,6 +625,17 @@ export function SubmissionPage() {
       return {
         label: t(`state.${submission.status}`),
         disabled: true,
+        variant: "secondary" as const,
+      };
+    }
+
+    if (
+      submission.status === "completed" &&
+      reevaluatableSubmissionIdSet.has(submission.id)
+    ) {
+      return {
+        label: t("evaluations.reEvaluate"),
+        disabled: false,
         variant: "secondary" as const,
       };
     }
@@ -1374,8 +1432,23 @@ export function SubmissionPage() {
         <Card className="p-5">
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-lg font-semibold">{t("submissions.title")}</h3>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Badge>{groupId ? submissionsTotal : 0}</Badge>
+              <Button
+                variant="secondary"
+                type="button"
+                onClick={handleReEvaluateCompletedClick}
+                disabled={
+                  isBatchActive ||
+                  !groupId ||
+                  !reevaluatableSubmissionIds.length ||
+                  isReEvaluateCompletedBusy
+                }
+              >
+                {isReEvaluateCompletedBusy
+                  ? t("common.loading")
+                  : t("submissions.reEvaluateCompleted")}
+              </Button>
               <Button
                 variant={isBatchActive ? "secondary" : "primary"}
                 type="button"
@@ -1486,6 +1559,11 @@ export function SubmissionPage() {
                         >
                           {t(`state.${submission.status}`)}
                         </Badge>
+                        {reevaluatableSubmissionIdSet.has(submission.id) ? (
+                          <Badge className="bg-amber-100 text-amber-700">
+                            {t("submissions.needsReevaluation")}
+                          </Badge>
+                        ) : null}
                         {submission.status === "failed" ? (
                           <p className="text-xs text-destructive">
                             {t("submissions.failureReasonLabel")}:{" "}
@@ -1498,16 +1576,21 @@ export function SubmissionPage() {
                       </div>
                       <div className="flex flex-wrap gap-2 sm:w-36 sm:flex-col sm:items-stretch sm:pt-8">
                         {actionState &&
-                        canEvaluateSubmission(
+                        (canEvaluateSubmission(
                           submission.status,
                           submission.student_id,
-                        ) ? (
+                        ) ||
+                          submission.status === "completed") ? (
                           <Button
                             variant={actionState.variant}
                             type="button"
                             className="h-10 px-3 text-xs"
                             onClick={() =>
-                              evaluateMutation.mutate(submission.id)
+                              evaluateMutation.mutate({
+                                submissionId: submission.id,
+                                includeCompleted:
+                                  submission.status === "completed",
+                              })
                             }
                             disabled={
                               actionState.disabled ||

@@ -232,6 +232,51 @@ def cap_score_by_explicit_evidence(
     return capped_score, note
 
 
+def cap_score_by_audit_consistency(
+    *,
+    criterion_name: str,
+    audit_items: list[RequirementAuditItem],
+    normalized_score: float | None,
+    grade_scale: float,
+    is_manual: bool,
+    response_language: str,
+) -> tuple[float | None, str | None]:
+    if is_manual or normalized_score is None or not audit_items or grade_scale <= 0:
+        return normalized_score, None
+
+    has_missing = any(item.status in {"missing", "unknown"} for item in audit_items)
+    has_partial = any(item.status == "partial" for item in audit_items)
+    has_met = any(item.status == "met" for item in audit_items)
+    score_ratio = normalized_score / grade_scale
+    cap_ratio: float | None = None
+
+    if score_ratio >= 0.70 and not has_met:
+        cap_ratio = 0.55
+    elif score_ratio >= 0.85 and has_missing:
+        cap_ratio = 0.69
+    elif normalized_score >= grade_scale and (has_missing or has_partial):
+        cap_ratio = 0.84
+
+    if cap_ratio is None:
+        return normalized_score, None
+
+    capped_score = round(min(normalized_score, grade_scale * cap_ratio), 2)
+    if capped_score >= normalized_score:
+        return normalized_score, None
+
+    if response_language == "ar":
+        note = (
+            f"تم تخفيض علامة معيار \"{criterion_name}\" لأن قائمة التدقيق في رد المزود "
+            "لا تدعم العلامة العالية المعطاة."
+        )
+    else:
+        note = (
+            f"The score for \"{criterion_name}\" was capped because the provider's "
+            "checklist did not support the high score it returned."
+        )
+    return capped_score, note
+
+
 def append_cap_note(feedback: str, cap_note: str | None) -> str:
     if not cap_note:
         return feedback

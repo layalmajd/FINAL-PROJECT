@@ -23,10 +23,10 @@ export function reEvaluateSubmission(submissionId: string) {
   });
 }
 
-export function startBatchEvaluations(submissionIds: string[]) {
+export function startBatchEvaluations(submissionIds: string[], includeCompleted = false) {
   return apiRequest<{ queued_count: number; already_running: boolean }>("/evaluations/batch/start", {
     method: "POST",
-    bodyJson: { submission_ids: submissionIds },
+    bodyJson: { submission_ids: submissionIds, include_completed: includeCompleted },
   });
 }
 

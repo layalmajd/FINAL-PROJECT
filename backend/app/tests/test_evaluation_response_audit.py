@@ -2,6 +2,7 @@ from app.utils.evaluation_response_audit import (
     RequirementAuditItem,
     append_points_breakdown_to_feedback,
     audit_consistency_errors,
+    cap_score_by_audit_consistency,
     cap_score_by_explicit_evidence,
     normalized_score_to_points,
 )
@@ -88,6 +89,27 @@ def test_full_score_conflicts_with_missing_audit_item() -> None:
     )
 
     assert errors
+
+
+def test_caps_high_score_when_audit_has_no_met_items() -> None:
+    score, note = cap_score_by_audit_consistency(
+        criterion_name="Testing and Validation Plan",
+        audit_items=[
+            RequirementAuditItem(
+                requirement="4 test cases",
+                status="partial",
+                evidence="Three test cases are listed.",
+                missing_or_weak_reason="One required test case and expected results are missing.",
+            )
+        ],
+        normalized_score=90,
+        grade_scale=100,
+        is_manual=False,
+        response_language="en",
+    )
+
+    assert score == 55
+    assert note
 
 
 def test_normalized_score_converts_to_criterion_points() -> None:

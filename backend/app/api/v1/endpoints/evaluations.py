@@ -122,6 +122,7 @@ async def start_batch_evaluations(
         instructor_id=current_instructor.id,
         submission_ids=payload.submission_ids,
         response_language=service.normalize_response_language(accept_language),
+        include_completed=payload.include_completed,
     )
     return BatchEvaluateResponse(
         queued_count=queued_count,

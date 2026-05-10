@@ -13,6 +13,7 @@ class EvaluateSubmissionRequest(BaseModel):
 
 class BatchEvaluateRequest(BaseModel):
     submission_ids: list[str] = Field(min_length=1)
+    include_completed: bool = False
 
 
 class BatchEvaluateResponse(BaseModel):

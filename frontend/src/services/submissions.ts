@@ -61,6 +61,11 @@ export function fetchEvaluatableSubmissionIds(groupId: string) {
   return apiRequest<{ items: string[] }>(`/submissions/evaluatable-ids?${query}`);
 }
 
+export function fetchReevaluatableSubmissionIds(groupId: string) {
+  const query = buildQueryString({ group_id: groupId });
+  return apiRequest<{ items: string[] }>(`/submissions/reevaluatable-ids?${query}`);
+}
+
 export function uploadSubmissions(formData: FormData) {
   return apiRequest<{
     batch: { id: string };

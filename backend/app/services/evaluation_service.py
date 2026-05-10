@@ -291,6 +291,7 @@ class EvaluationService:
         instructor_id: str,
         submission_ids: list[str],
         response_language: str,
+        include_completed: bool = False,
     ) -> tuple[int, bool]:
         unique_ids = [item for item in dict.fromkeys(submission_ids) if item]
         if not unique_ids:
@@ -299,18 +300,39 @@ class EvaluationService:
         provider_config = await self.provider_service.resolve_config(instructor_id)
 
         queued_submissions = []
+        reevaluatable_ids_by_group: dict[str, set[str]] = {}
         for submission_id in unique_ids:
             submission = await self.submission_repository.get_by_id_for_instructor(submission_id, instructor_id)
             if not submission:
                 continue
             if not submission.student_id or not submission.student_id.strip():
                 continue
-            if submission.status not in {
+            allowed_statuses = {
                 SubmissionStatus.PENDING,
                 SubmissionStatus.FAILED,
                 SubmissionStatus.QUEUED,
-            }:
+            }
+            if include_completed:
+                allowed_statuses.update(
+                    {
+                        SubmissionStatus.COMPLETED,
+                        SubmissionStatus.PARTIALLY_PROCESSED,
+                    }
+                )
+            if submission.status not in allowed_statuses:
                 continue
+            if submission.status in {SubmissionStatus.COMPLETED, SubmissionStatus.PARTIALLY_PROCESSED}:
+                if not include_completed:
+                    continue
+                if submission.group_id not in reevaluatable_ids_by_group:
+                    reevaluatable_ids_by_group[submission.group_id] = set(
+                        await self.submission_repository.list_reevaluatable_ids_for_group(
+                            instructor_id,
+                            submission.group_id,
+                        )
+                    )
+                if submission.id not in reevaluatable_ids_by_group[submission.group_id]:
+                    continue
             if not submission.content_cache or submission.content_cache.parser_status.value != "success":
                 continue
             try:

@@ -153,6 +153,53 @@ class SubmissionRepository:
         )
         return list(result.scalars().all())
 
+    async def list_reevaluatable_ids_for_group(self, instructor_id: str, group_id: str) -> list[str]:
+        group_result = await self.session.execute(
+            select(AssignmentGroup)
+            .where(
+                AssignmentGroup.id == group_id,
+                AssignmentGroup.instructor_id == instructor_id,
+            )
+            .options(selectinload(AssignmentGroup.criteria))
+        )
+        group = group_result.scalar_one_or_none()
+        if not group:
+            return []
+
+        rubric_updated_at = max(
+            [group.updated_at, *(criterion.updated_at for criterion in group.criteria)]
+        )
+        latest_evaluation_at = (
+            select(
+                EvaluationResult.submission_id,
+                func.max(EvaluationResult.created_at).label("latest_created_at"),
+            )
+            .group_by(EvaluationResult.submission_id)
+            .subquery()
+        )
+        result = await self.session.execute(
+            select(Submission.id)
+            .join(Submission.group)
+            .join(
+                latest_evaluation_at,
+                latest_evaluation_at.c.submission_id == Submission.id,
+            )
+            .where(
+                AssignmentGroup.instructor_id == instructor_id,
+                Submission.group_id == group_id,
+                Submission.status.in_(
+                    [
+                        SubmissionStatus.COMPLETED,
+                        SubmissionStatus.PARTIALLY_PROCESSED,
+                    ]
+                ),
+                func.length(func.trim(Submission.student_id)) > 0,
+                latest_evaluation_at.c.latest_created_at < rubric_updated_at,
+            )
+            .order_by(Submission.created_at.desc())
+        )
+        return list(result.scalars().all())
+
     async def mark_processed(self, submission: Submission) -> Submission:
         submission.processed_at = datetime.now(timezone.utc)
         self.session.add(submission)
