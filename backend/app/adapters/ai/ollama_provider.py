@@ -157,6 +157,8 @@ class OllamaProvider(BaseAIProvider):
         raw_scores = parsed.get("criterion_scores")
         if not isinstance(raw_scores, list):
             raise ValidationError("Ollama response must contain a criterion_scores array")
+        if any(not isinstance(item, dict) for item in raw_scores):
+            raise ValidationError("Ollama criterion_scores items must be JSON objects")
         if not isinstance(parsed.get("summary_feedback"), str) or not parsed.get("summary_feedback", "").strip():
             raise ValidationError("Ollama response must include a non-empty summary_feedback string")
 
@@ -176,18 +178,18 @@ class OllamaProvider(BaseAIProvider):
                 None,
             )
             if match_index is None:
-                item = {}
-                missing_item = True
-            else:
-                item = unused_items.pop(match_index)
-                missing_item = False
+                raise ValidationError(f"Ollama response omitted criterion: {criterion.name}")
+
+            item = unused_items.pop(match_index)
             earned_points = self._coerce_score(item.get("earned_points", item.get("points")))
-            normalized_score = self._coerce_score(item.get("ai_score"))
-            if normalized_score is None and earned_points is not None and criterion.weight > 0:
+            normalized_score = None
+            if earned_points is not None and criterion.weight > 0:
                 earned_points = max(0.0, min(float(earned_points), float(criterion.weight)))
                 normalized_score = (earned_points / float(criterion.weight)) * payload.grade_scale
+            if normalized_score is None:
+                normalized_score = self._coerce_score(item.get("ai_score"))
             if not criterion.is_manual and normalized_score is None:
-                normalized_score = self._minimum_unscored_value(payload)
+                raise ValidationError(f"Ollama response omitted numeric earned_points for criterion: {criterion.name}")
             if normalized_score is not None:
                 normalized_score = max(0.0, min(float(normalized_score), float(payload.grade_scale)))
 
@@ -210,7 +212,7 @@ class OllamaProvider(BaseAIProvider):
             feedback = self._coerce_feedback(item.get("feedback")) or self._default_feedback(
                 criterion.name,
                 payload=payload,
-                missing_item=missing_item,
+                missing_item=False,
                 normalized_score=normalized_score,
             )
             feedback = append_audit_to_feedback(
@@ -226,19 +228,30 @@ class OllamaProvider(BaseAIProvider):
                 response_language=payload.response_language,
             )
             feedback = append_cap_note(feedback, cap_note)
+            if normalized_score is not None and criterion.weight > 0:
+                earned_points = (normalized_score / float(payload.grade_scale)) * float(criterion.weight)
 
             if normalized_score is not None:
                 has_numeric_score = True
-                weighted_total += (criterion.weight / 100.0) * normalized_score
+                weighted_total += (criterion.weight / payload.grade_scale) * normalized_score
 
             normalized_scores.append(
                 {
                     "criterion_name": criterion.name,
-                    "earned_points": earned_points,
-                    "ai_score": normalized_score,
+                    "earned_points": round(earned_points, 2) if earned_points is not None else None,
+                    "ai_score": round(normalized_score, 2) if normalized_score is not None else None,
                     "feedback": feedback,
                     "requirements_audit": audit_items,
                 }
+            )
+
+        if unused_items:
+            extra_names = [
+                str(item.get("criterion_name", "")).strip() or "<missing criterion_name>"
+                for item in unused_items
+            ]
+            raise ValidationError(
+                "Ollama response included unrecognized or duplicate criteria: " + ", ".join(extra_names)
             )
 
         if any(not criterion.is_manual for criterion in payload.criteria) and not has_numeric_score:
@@ -366,7 +379,10 @@ class OllamaProvider(BaseAIProvider):
             cleaned = value.strip()
             if not cleaned:
                 return None
-            return float(cleaned)
+            try:
+                return float(cleaned)
+            except ValueError as exc:
+                raise ValidationError("Ollama returned a non-numeric score value") from exc
         raise ValidationError("Ollama returned an unsupported ai_score type")
 
     def _coerce_feedback(self, value) -> str | None:
@@ -374,9 +390,6 @@ class OllamaProvider(BaseAIProvider):
             return None
         text = str(value).strip()
         return text or None
-
-    def _minimum_unscored_value(self, payload: EvaluationInput) -> float:
-        return round(max(float(payload.grade_scale) * 0.01, 0.01), 2)
 
     def _default_feedback(
         self,
@@ -410,7 +423,7 @@ class OllamaProvider(BaseAIProvider):
         submission_word_count = len(payload.submission_text.split())
         criteria_lines = "\n".join(
             [
-                f'- "{criterion.name}" | manual_only={"yes" if criterion.is_manual else "no"} | weight_percent={criterion.weight:.2f} | teacher_requirement={criterion.description or "No description provided."}'
+                f'- criterion_name="{criterion.name}" | manual_only={"yes" if criterion.is_manual else "no"} | max_points={criterion.weight:.2f} | teacher_requirement={criterion.description or "No description provided."}'
                 for criterion in payload.criteria
             ]
         )
@@ -425,9 +438,12 @@ You must try again and return JSON only.
 
 Hard requirements:
 {grading_rules}
-- Do not use null for any non-manual criterion.
+- Do not use null for earned_points on any non-manual criterion.
+- Use earned_points for each criterion, on the 0 to max_points scale shown for that criterion.
+- Do not put weighted percentages in earned_points.
 - summary_feedback must be a non-empty string with 2 to 4 sentences.
 - Use the exact key name criterion_scores as an array.
+- Use the exact criterion_name values from the Criteria section. Return every listed criterion exactly once.
 - Every non-manual criterion must include requirements_audit with concrete evidence for met items.
 - If any requirements_audit item is partial or missing, the criterion cannot receive full score.
 - Negative statements such as "no real entities", "not provided", or "will be tested later" prove absence, not fulfillment.
@@ -455,7 +471,7 @@ Return JSON only.
         submission_word_count = len(payload.submission_text.split())
         criteria_lines = "\n".join(
             [
-                f'- "{criterion.name}" | weight_percent={criterion.weight:.2f} | manual_only={"yes" if criterion.is_manual else "no"} | teacher_requirement={criterion.description or "No description provided."}'
+                f'- criterion_name="{criterion.name}" | max_points={criterion.weight:.2f} | manual_only={"yes" if criterion.is_manual else "no"} | teacher_requirement={criterion.description or "No description provided."}'
                 for criterion in payload.criteria
             ]
         )
@@ -480,11 +496,13 @@ Evaluation method:
 - If the submission explicitly says something is missing, not provided, not explained, or will be done later, treat that as evidence of absence.
 - Give proportional partial credit for explicit required parts that are present, even if other parts of the same criterion are missing.
 - Do not use all-or-nothing scoring unless the teacher explicitly says the criterion is binary/pass-fail.
-- If one criterion completely fails, deduct only that criterion's weighted contribution and continue scoring the other criteria independently.
-- Do not use 0 for an ordinary criterion unless the teacher explicitly says that a missing item receives 0, or the whole submission is blank/unrelated.
+- Return earned_points from 0 to that criterion's max_points. Do not return weighted percentages as earned_points.
+- If one criterion completely fails, give 0 earned_points for that criterion only and continue scoring the other criteria independently.
+- Use 0 earned_points for a criterion when the submission has no usable positive evidence for that criterion.
 - Keep partial credit calibrated: vague mentions get low partial credit; high scores require explicit, usable details for most required parts.
 - If an explicit requirement is missing, weak, incorrect, or unsupported, deduct proportionally and explain exactly what was missing.
 - Do not deduct for spelling, writing style, formatting, length, or presentation unless the teacher explicitly required that in the assignment description or criterion.
+- Use the exact criterion_name values from the Criteria section. Return every listed criterion exactly once.
 
 JSON shape:
 {{
@@ -493,6 +511,8 @@ JSON shape:
   "criterion_scores": [
     {{
       "criterion_name": "string",
+      "earned_points": number | null,
+      "deducted_points": number | null,
       "ai_score": number | null,
       "feedback": "string",
       "requirements_audit": [

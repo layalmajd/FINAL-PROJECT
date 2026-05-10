@@ -31,7 +31,7 @@ const optionalWeightField = z.preprocess((value) => {
   }
   const parsed = Number(value);
   return Number.isNaN(parsed) ? value : parsed;
-}, z.number().positive().max(100).optional());
+}, z.number().positive().max(1000).optional());
 
 const criterionDraftSchema = z.object({
   name: z.string().default(""),
@@ -83,13 +83,7 @@ const schema = z
       total += criterion.weight;
     }
 
-    if (Math.round(total * 100) / 100 !== 100) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "groups.weightTotalValidation",
-        path: ["criteria"],
-      });
-    }
+    // Weight validation is now done in handleCreateGroupSubmit to show error message
   });
 
 type FormValues = z.infer<typeof schema>;
@@ -117,6 +111,7 @@ export function GroupsPage() {
   const [pageSize, setPageSize] = useState(5);
   const [groupPendingDelete, setGroupPendingDelete] =
     useState<AssignmentGroup | null>(null);
+  const [showWeightError, setShowWeightError] = useState(false);
   const groupsQuery = useQuery({
     queryKey: ["groups"],
     queryFn: fetchGroups,
@@ -149,20 +144,19 @@ export function GroupsPage() {
     name: "criteria",
   });
   const criteriaValues = form.watch("criteria");
-  const activeCriteriaCount = useMemo(
-    () => criteriaValues.filter(hasCriterionContent).length,
-    [criteriaValues],
-  );
-  const criteriaTotal = useMemo(
-    () =>
-      Math.round(
-        criteriaValues.reduce(
-          (sum, criterion) => sum + Number(criterion.weight ?? 0),
-          0,
-        ) * 100,
-      ) / 100,
-    [criteriaValues],
-  );
+  const gradeScale = form.watch("grade_scale");
+
+  // Calculate active criteria count directly without useMemo
+  const activeCriteriaCount = criteriaValues.filter(hasCriterionContent).length;
+
+  // Calculate total weights directly without useMemo
+  const criteriaTotal =
+    Math.round(
+      criteriaValues.reduce(
+        (sum, criterion) => sum + (Number(criterion.weight) || 0),
+        0,
+      ) * 100,
+    ) / 100;
   const mutation = useMutation({
     mutationFn: async (values: FormValues) => {
       const group = await createGroup({
@@ -203,6 +197,7 @@ export function GroupsPage() {
       return { createdCriteria };
     },
     onSuccess: ({ createdCriteria }) => {
+      setShowWeightError(false);
       form.reset({
         name: "",
         description: "",
@@ -254,6 +249,29 @@ export function GroupsPage() {
     deleteMutation.mutate(groupPendingDelete.id);
   };
 
+  const handleCreateGroupSubmit = (values: FormValues) => {
+    const activeCriteria = values.criteria.filter(hasCriterionContent);
+    const total =
+      Math.round(
+        activeCriteria.reduce((sum, c) => sum + (Number(c.weight) || 0), 0) *
+          100,
+      ) / 100;
+
+    // Check if weights match grade scale
+    if (
+      activeCriteria.length > 0 &&
+      Math.round(total * 100) / 100 !== values.grade_scale
+    ) {
+      setShowWeightError(true);
+      // Scroll to top to show error message
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+
+    setShowWeightError(false);
+    mutation.mutate(values);
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader title={t("groups.title")} subtitle={t("groups.subtitle")} />
@@ -262,7 +280,7 @@ export function GroupsPage() {
           <h3 className="mb-4 text-lg font-semibold">{t("common.create")}</h3>
           <form
             className="space-y-4"
-            onSubmit={form.handleSubmit((values) => mutation.mutate(values))}
+            onSubmit={form.handleSubmit(handleCreateGroupSubmit)}
           >
             <div className="space-y-2">
               <label className="text-sm font-medium">{t("groups.name")}</label>
@@ -278,7 +296,11 @@ export function GroupsPage() {
               <label className="text-sm font-medium">
                 {t("groups.gradeScale")}
               </label>
-              <Input {...form.register("grade_scale")} type="number" />
+              <Input
+                {...form.register("grade_scale")}
+                type="number"
+                onWheel={(e) => e.currentTarget.blur()}
+              />
             </div>
             <div className="space-y-4 rounded-2xl border border-border/70 p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -294,15 +316,38 @@ export function GroupsPage() {
                   <Badge>{`${t("groups.criteriaCount")}: ${activeCriteriaCount}`}</Badge>
                   <Badge
                     className={
-                      criteriaTotal === 100
+                      criteriaTotal === gradeScale
                         ? "bg-emerald-100 text-emerald-700"
-                        : ""
+                        : "bg-amber-100 text-amber-700"
                     }
                   >
-                    {`${t("groups.weights")}: ${criteriaTotal}`}
+                    {`${t("groups.weights")}: ${criteriaTotal}/${gradeScale}`}
                   </Badge>
                 </div>
               </div>
+
+              {showWeightError &&
+                activeCriteriaCount > 0 &&
+                Math.round(criteriaTotal * 100) / 100 !== gradeScale && (
+                  <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive border border-destructive/30">
+                    <p className="font-semibold mb-1">
+                      {t("groups.weightTotalValidation")}
+                    </p>
+                    <p className="text-xs">
+                      {criteriaTotal < gradeScale
+                        ? t("groups.weightTooLow", {
+                            current: criteriaTotal,
+                            required: gradeScale,
+                            difference: gradeScale - criteriaTotal,
+                          })
+                        : t("groups.weightTooHigh", {
+                            current: criteriaTotal,
+                            required: gradeScale,
+                            difference: criteriaTotal - gradeScale,
+                          })}
+                    </p>
+                  </div>
+                )}
 
               <div className="space-y-3">
                 {fields.map((field, index) => (
@@ -345,6 +390,15 @@ export function GroupsPage() {
                           {...form.register(`criteria.${index}.weight`)}
                           type="number"
                           step="0.01"
+                          onWheel={(e) => e.currentTarget.blur()}
+                          onChange={(e) => {
+                            form.setValue(
+                              `criteria.${index}.weight`,
+                              e.target.value
+                                ? parseFloat(e.target.value)
+                                : undefined,
+                            );
+                          }}
                         />
                         {form.formState.errors.criteria?.[index]?.weight
                           ?.message ? (

@@ -25,7 +25,7 @@ def _group_detail(group) -> AssignmentGroupDetailResponse:
         criteria=criteria,
         submissions_count=len(group.submissions),
         weights_total=weights_total,
-        ready_for_evaluation=bool(criteria) and weights_total == 100,
+        ready_for_evaluation=bool(criteria) and weights_total == group.grade_scale,
     )
 
 

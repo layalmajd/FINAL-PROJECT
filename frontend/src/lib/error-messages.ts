@@ -89,6 +89,9 @@ function mapRawMessageToFriendlyText(rawMessage?: string | null) {
   if (includesAny(message, ["must have a student id before evaluation", "before evaluation"])) {
     return translate("errors.validation.studentIdBeforeEvaluation");
   }
+  if (includesAny(message, ["cannot delete a submission while it is being evaluated"])) {
+    return translate("errors.validation.submissionProcessing");
+  }
   if (
     includesAny(message, [
       "content is not ready for evaluation",
@@ -151,10 +154,25 @@ function mapRawMessageToFriendlyText(rawMessage?: string | null) {
   ) {
     return translate("errors.provider.ollamaUnavailable");
   }
-  if (includesAny(message, ["request is too large", "too large for this model", "payload too large"])) {
+  if (
+    includesAny(message, [
+      "request is too large",
+      "request too large",
+      "too large for this model",
+      "payload too large",
+      "(413)",
+    ])
+  ) {
     return translate("errors.provider.requestTooLarge");
   }
-  if (includesAny(message, ["prompt exceeds provider limits", "token limit"])) {
+  if (
+    includesAny(message, [
+      "prompt exceeds provider limits",
+      "token limit",
+      "tokens per minute",
+      "tpm",
+    ])
+  ) {
     return translate("errors.provider.promptTooLarge");
   }
   if (includesAny(message, ["rate limit", "too many requests", "(429)", " 429"])) {

@@ -105,7 +105,7 @@ export function EvaluationDetailPage() {
       const effectiveScore = hasManualValue
         ? toRawScore(manualPoints, score.weight, gradeScale) ?? 0
         : score.manual_score ?? score.ai_score ?? 0;
-      return sum + (score.weight / 100) * effectiveScore;
+      return sum + (score.weight / gradeScale) * effectiveScore;
     }, 0);
     return Math.round(total * 100) / 100;
   }, [evaluation, watchedItems]);

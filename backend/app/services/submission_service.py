@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, ValidationError
+from app.models.enums import SubmissionStatus, UploadBatchStatus
 from app.repositories.submission_repository import SubmissionRepository
 from app.schemas.submissions import SubmissionStatusUpdateRequest, SubmissionStudentIdUpdateRequest
 from app.services.audit_service import AuditService
@@ -91,3 +94,39 @@ class SubmissionService:
         )
         await self.session.commit()
         return submission
+
+    async def delete_submission(self, instructor_id: str, submission_id: str) -> None:
+        submission = await self.get_submission(instructor_id, submission_id)
+        if submission.status == SubmissionStatus.PROCESSING:
+            raise ValidationError("Cannot delete a submission while it is being evaluated")
+
+        file_path = submission.file_path
+        upload_batch = submission.upload_batch
+        await self.audit_service.log(
+            instructor_id=instructor_id,
+            action="submission.deleted",
+            entity_type="submission",
+            entity_id=submission.id,
+            metadata_json={
+                "original_filename": submission.original_filename,
+                "student_id": submission.student_id,
+                "status": submission.status.value,
+            },
+        )
+        await self.repository.delete_submission(submission)
+        if upload_batch:
+            upload_batch.accepted_files = max(0, int(upload_batch.accepted_files or 0) - 1)
+            upload_batch.total_files = max(0, int(upload_batch.total_files or 0) - 1)
+            if upload_batch.accepted_files == upload_batch.total_files and upload_batch.total_files > 0:
+                upload_batch.status = UploadBatchStatus.COMPLETED
+            elif upload_batch.accepted_files > 0:
+                upload_batch.status = UploadBatchStatus.PARTIAL
+            elif upload_batch.total_files > 0:
+                upload_batch.status = UploadBatchStatus.FAILED
+            await self.repository.save_batch(upload_batch)
+        await self.session.commit()
+
+        if file_path:
+            stored_file = Path(file_path)
+            if stored_file.is_file():
+                stored_file.unlink(missing_ok=True)

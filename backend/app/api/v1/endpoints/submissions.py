@@ -178,3 +178,12 @@ async def update_submission_student_id(
 ):
     submission = await SubmissionService(db).update_student_id(current_instructor.id, submission_id, payload)
     return SubmissionResponse.model_validate(submission)
+
+
+@router.delete("/{submission_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_submission(
+    submission_id: str,
+    current_instructor=Depends(get_current_instructor),
+    db: AsyncSession = Depends(get_db),
+):
+    await SubmissionService(db).delete_submission(current_instructor.id, submission_id)

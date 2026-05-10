@@ -26,6 +26,7 @@ import {
 import { fetchGroups } from "@/services/groups";
 import {
   canEvaluateSubmission,
+  deleteSubmission,
   fetchEvaluatableSubmissionIds,
   fetchSubmissionReport,
   fetchSubmissions,
@@ -116,6 +117,8 @@ export function SubmissionPage() {
   const [missingStudentPageSize, setMissingStudentPageSize] =
     useState(DEFAULT_PAGE_SIZE);
   const [fileInputKey, setFileInputKey] = useState(0);
+  const [submissionPendingDelete, setSubmissionPendingDelete] =
+    useState<Submission | null>(null);
   const wasBatchActiveRef = useRef(false);
 
   const groupsQuery = useQuery({ queryKey: ["groups"], queryFn: fetchGroups });
@@ -197,6 +200,8 @@ export function SubmissionPage() {
     }
     return message.length > 220 ? `${message.slice(0, 220)}…` : message;
   };
+  const canDeleteSubmission = (submission: Submission) =>
+    submission.status !== "processing";
   const duplicatePreviewRows = useMemo(
     () => previewRows.filter((row) => row.is_duplicate),
     [previewRows],
@@ -473,6 +478,23 @@ export function SubmissionPage() {
     },
     onError: (error: Error) => toast.error(getUserFacingErrorMessage(error)),
   });
+
+  const deleteSubmissionMutation = useMutation({
+    mutationFn: deleteSubmission,
+    onSuccess: async () => {
+      setSubmissionPendingDelete(null);
+      await invalidateLiveQueries();
+      toast.success(t("submissions.deleteSuccess"));
+    },
+    onError: (error: Error) => toast.error(getUserFacingErrorMessage(error)),
+  });
+
+  const confirmDeleteSubmission = () => {
+    if (!submissionPendingDelete) {
+      return;
+    }
+    deleteSubmissionMutation.mutate(submissionPendingDelete.id);
+  };
 
   const evaluateMutation = useMutation({
     mutationFn: async (submissionId: string) => {
@@ -1433,11 +1455,26 @@ export function SubmissionPage() {
                 return (
                   <div
                     key={submission.id}
-                    className="rounded-2xl bg-muted/70 p-4"
+                    className="relative rounded-2xl bg-muted/70 p-4"
                   >
+                    <Button
+                      variant="ghost"
+                      type="button"
+                      className="absolute left-3 top-3 h-8 w-8 px-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      onClick={() => setSubmissionPendingDelete(submission)}
+                      disabled={
+                        !canDeleteSubmission(submission) ||
+                        (deleteSubmissionMutation.isPending &&
+                          deleteSubmissionMutation.variables === submission.id)
+                      }
+                      title={t("submissions.deleteSubmission")}
+                      aria-label={t("submissions.deleteSubmission")}
+                    >
+                      <Trash2 size={15} />
+                    </Button>
                     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="space-y-2">
-                        <p className="font-semibold">
+                      <div className="min-w-0 space-y-2">
+                        <p className="break-words font-semibold sm:max-w-[390px]">
                           {submission.original_filename}
                         </p>
                         <p className="text-sm text-foreground/70">
@@ -1459,7 +1496,7 @@ export function SubmissionPage() {
                           </p>
                         ) : null}
                       </div>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-wrap gap-2 sm:w-36 sm:flex-col sm:items-stretch sm:pt-8">
                         {actionState &&
                         canEvaluateSubmission(
                           submission.status,
@@ -1468,6 +1505,7 @@ export function SubmissionPage() {
                           <Button
                             variant={actionState.variant}
                             type="button"
+                            className="h-10 px-3 text-xs"
                             onClick={() =>
                               evaluateMutation.mutate(submission.id)
                             }
@@ -1480,7 +1518,10 @@ export function SubmissionPage() {
                           </Button>
                         ) : null}
                         <Link to={`/submissions/${submission.id}/evaluations`}>
-                          <Button variant="secondary">
+                          <Button
+                            variant="secondary"
+                            className="h-10 w-full px-3 text-xs"
+                          >
                             {t("submissions.viewEvaluations")}
                           </Button>
                         </Link>
@@ -1633,22 +1674,42 @@ export function SubmissionPage() {
                           {renderCriterionResultForRow(row)}
                         </td>
                         <td className="px-4 py-4 text-center">
-                          {row.latest_evaluation ? (
-                            <Link
-                              to={`/evaluations/${row.latest_evaluation.id}#manual-adjustments`}
-                            >
-                              <Button
-                                variant="secondary"
-                                className="h-8 px-3 text-xs whitespace-nowrap shadow-sm hover:shadow-md"
+                          <div className="flex items-center justify-center gap-2">
+                            {row.latest_evaluation ? (
+                              <Link
+                                to={`/evaluations/${row.latest_evaluation.id}#manual-adjustments`}
                               >
-                                {t("submissions.manualAdjust", "تعديل يدوي")}
-                              </Button>
-                            </Link>
-                          ) : (
-                            <span className="text-xs text-foreground/50">
-                              {t("common.notAvailable")}
-                            </span>
-                          )}
+                                <Button
+                                  variant="secondary"
+                                  className="h-8 px-3 text-xs whitespace-nowrap shadow-sm hover:shadow-md"
+                                >
+                                  {t("submissions.manualAdjust", "تعديل يدوي")}
+                                </Button>
+                              </Link>
+                            ) : (
+                              <span className="text-xs text-foreground/50">
+                                {t("common.notAvailable")}
+                              </span>
+                            )}
+                            <Button
+                              variant="ghost"
+                              type="button"
+                              className="h-8 w-8 px-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                              onClick={() =>
+                                setSubmissionPendingDelete(row.submission)
+                              }
+                              disabled={
+                                !canDeleteSubmission(row.submission) ||
+                                (deleteSubmissionMutation.isPending &&
+                                  deleteSubmissionMutation.variables ===
+                                    row.submission.id)
+                              }
+                              title={t("submissions.deleteSubmission")}
+                              aria-label={t("submissions.deleteSubmission")}
+                            >
+                              <Trash2 size={15} />
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1734,21 +1795,37 @@ export function SubmissionPage() {
                       />
                     </td>
                     <td className="px-3 py-3">
-                      <Button
-                        type="button"
-                        onClick={() => handleSaveStudentId(submission.id)}
-                        disabled={
-                          saveStudentIdMutation.isPending &&
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          onClick={() => handleSaveStudentId(submission.id)}
+                          disabled={
+                            saveStudentIdMutation.isPending &&
+                            saveStudentIdMutation.variables?.submissionId ===
+                              submission.id
+                          }
+                        >
+                          {saveStudentIdMutation.isPending &&
                           saveStudentIdMutation.variables?.submissionId ===
                             submission.id
-                        }
-                      >
-                        {saveStudentIdMutation.isPending &&
-                        saveStudentIdMutation.variables?.submissionId ===
-                          submission.id
-                          ? t("common.loading")
-                          : t("submissions.saveStudentId")}
-                      </Button>
+                            ? t("common.loading")
+                            : t("submissions.saveStudentId")}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          type="button"
+                          className="h-11 w-11 px-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => setSubmissionPendingDelete(submission)}
+                          disabled={
+                            deleteSubmissionMutation.isPending &&
+                            deleteSubmissionMutation.variables === submission.id
+                          }
+                          title={t("submissions.deleteSubmission")}
+                          aria-label={t("submissions.deleteSubmission")}
+                        >
+                          <Trash2 size={17} />
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1767,6 +1844,49 @@ export function SubmissionPage() {
             }}
           />
         </Card>
+      ) : null}
+      {submissionPendingDelete ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-sm">
+          <Card className="w-full max-w-lg p-6 shadow-2xl">
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <h3 className="text-xl font-semibold">
+                  {t("submissions.deleteDialogTitle")}
+                </h3>
+                <p className="text-sm leading-7 text-foreground/75">
+                  {t("submissions.deleteConfirm", {
+                    filename: submissionPendingDelete.original_filename,
+                    studentId:
+                      submissionPendingDelete.student_id?.trim() ||
+                      t("common.notAvailable"),
+                  })}
+                </p>
+              </div>
+              <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+                <Button
+                  variant="ghost"
+                  type="button"
+                  className="sm:min-w-28"
+                  onClick={() => setSubmissionPendingDelete(null)}
+                  disabled={deleteSubmissionMutation.isPending}
+                >
+                  {t("common.cancel")}
+                </Button>
+                <Button
+                  variant="danger"
+                  type="button"
+                  className="sm:min-w-32"
+                  onClick={confirmDeleteSubmission}
+                  disabled={deleteSubmissionMutation.isPending}
+                >
+                  {deleteSubmissionMutation.isPending
+                    ? t("common.loading")
+                    : t("submissions.deleteSubmission")}
+                </Button>
+              </div>
+            </div>
+          </Card>
+        </div>
       ) : null}
     </div>
   );

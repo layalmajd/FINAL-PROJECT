@@ -18,7 +18,7 @@ def build_evaluation_prompt(
             "\n".join(
                 [
                     f"- Criterion: {criterion.name}",
-                    f"  Weight in final grade: {float(criterion.weight):.2f}%",
+                    f"  Max points in final grade: {float(criterion.weight):.2f}",
                     f"  Manual only: {'yes' if criterion.is_manual else 'no'}",
                     f"  Teacher requirement: {criterion.description or 'No description provided.'}",
                 ]
@@ -43,11 +43,11 @@ Evaluation method:
 - Break each criterion into atomic required items before scoring. Named items, counts, coverage categories, rules, and phrases after "including", "covering", or "with" must be checked separately.
 - Use only positive evidence from the submission. A heading, section title, criterion name, or generic sentence is not enough.
 - If the submission explicitly says something is missing, not provided, not explained, or will be done later, treat that as evidence of absence.
-- Award the full criterion score only when all explicit requirements for that criterion are met.
+- Award the full criterion points only when all explicit requirements for that criterion are met.
 - Award partial credit for the explicit requirements that are present, even if other parts of the same criterion are missing.
 - Do not use all-or-nothing scoring unless the teacher explicitly says the criterion is binary/pass-fail.
-- If one criterion completely fails, deduct only that criterion's weighted contribution and continue scoring the other criteria independently.
-- Do not use 0 for an ordinary criterion unless the teacher explicitly says that a missing item receives 0, or the whole submission is blank/unrelated.
+- If one criterion completely fails, give 0 for that criterion only and continue scoring the other criteria independently.
+- Use 0 for a criterion when the submission has no usable positive evidence for that criterion.
 - Keep partial credit calibrated: vague mentions get low partial credit; high scores require explicit, usable details for most required parts.
 - Deduct only for missing, weak, incorrect, or unsupported requirements from the assignment description or criteria.
 - Do not deduct for spelling, style, formatting, length, or other side issues unless the teacher explicitly included them in the assignment description or criteria.
@@ -59,6 +59,8 @@ JSON shape:
   "criterion_scores": [
     {{
       "criterion_name": "string",
+      "earned_points": number | null,
+      "deducted_points": number | null,
       "ai_score": number | null,
       "feedback": "string",
       "requirements_audit": [

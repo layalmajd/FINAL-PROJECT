@@ -238,6 +238,67 @@ def append_cap_note(feedback: str, cap_note: str | None) -> str:
     return f"{feedback.strip()}\n{cap_note}" if feedback.strip() else cap_note
 
 
+def normalized_score_to_points(
+    *,
+    normalized_score: float | None,
+    criterion_weight: float,
+    grade_scale: float,
+) -> float | None:
+    if normalized_score is None or grade_scale <= 0:
+        return None
+    bounded_score = max(0.0, min(float(normalized_score), float(grade_scale)))
+    bounded_weight = max(0.0, float(criterion_weight))
+    return round((bounded_score / float(grade_scale)) * bounded_weight, 2)
+
+
+def append_points_breakdown_to_feedback(
+    feedback: str,
+    *,
+    normalized_score: float | None,
+    criterion_weight: float,
+    grade_scale: float,
+    response_language: str,
+    is_manual: bool,
+) -> str:
+    if is_manual or normalized_score is None:
+        return feedback
+
+    earned_points = normalized_score_to_points(
+        normalized_score=normalized_score,
+        criterion_weight=criterion_weight,
+        grade_scale=grade_scale,
+    )
+    if earned_points is None:
+        return feedback
+
+    max_points = round(max(0.0, float(criterion_weight)), 2)
+    deducted_points = round(max(0.0, max_points - earned_points), 2)
+    if response_language == "ar":
+        if deducted_points <= 0:
+            breakdown = (
+                f"النقاط: {_format_points(earned_points)} من {_format_points(max_points)}. "
+                "لم يتم الخصم."
+            )
+        else:
+            breakdown = (
+                f"النقاط: {_format_points(earned_points)} من {_format_points(max_points)}. "
+                f"مقدار الخصم: {_format_points(deducted_points)} من {_format_points(max_points)}."
+            )
+    elif deducted_points <= 0:
+        breakdown = (
+            f"Points: {_format_points(earned_points)} out of {_format_points(max_points)}. "
+            "No deductions."
+        )
+    else:
+        breakdown = (
+            f"Points: {_format_points(earned_points)} out of {_format_points(max_points)}. "
+            f"Deducted: {_format_points(deducted_points)} out of {_format_points(max_points)}."
+        )
+
+    cleaned_feedback = feedback.strip()
+    return f"{breakdown}\n{cleaned_feedback}" if cleaned_feedback else breakdown
+
+
 def extract_explicit_requirement_terms(description: str) -> list[str]:
     terms: list[str] = []
 
@@ -357,6 +418,13 @@ def _clean_text(value: Any) -> str:
     if value is None:
         return ""
     return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _format_points(value: float) -> str:
+    rounded = round(float(value), 2)
+    if rounded.is_integer():
+        return str(int(rounded))
+    return f"{rounded:.2f}".rstrip("0").rstrip(".")
 
 
 def _dedupe_preserving_order(values: list[str]) -> list[str]:

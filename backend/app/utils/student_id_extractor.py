@@ -9,6 +9,7 @@ ARABIC_NUMERAL_TRANSLATION = str.maketrans(
 LABELED_PATTERNS = [
     re.compile(r"(?im)(?:رقم\s*الطالب|الرقم\s*الجامعي)\s*[:：\-#]?\s*(\d{4,20})"),
     re.compile(r"(?im)(?:student\s*id|student\s*number)\s*[:：\-#]?\s*(\d{4,20})"),
+    re.compile(r"(?im)^\s*(?:id|i\.d\.|university\s*id|university\s*number)\s*[:：\-#]?\s*(\d{4,20})\b"),
     re.compile(r"(?im)(\d{4,20})\s*(?:رقم\s*الطالب|الرقم\s*الجامعي)"),
     re.compile(r"(?im)(\d{4,20})\s*(?:student\s*id|student\s*number)"),
 ]

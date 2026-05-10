@@ -86,7 +86,7 @@ class GroupService:
         self, instructor_id: str, group_id: str, payload: EvaluationCriterionCreate
     ) -> EvaluationCriterion:
         group = await self.get_group(instructor_id, group_id)
-        self._validate_weight_limit(group.criteria, payload.weight)
+        self._validate_weight_limit(group.criteria, payload.weight, group.grade_scale)
         criterion = EvaluationCriterion(
             group_id=group.id,
             name=payload.name.strip(),
@@ -115,7 +115,7 @@ class GroupService:
         incoming = payload.model_dump(exclude_unset=True)
         if "weight" in incoming:
             siblings = [item for item in criterion.group.criteria if item.id != criterion.id]
-            self._validate_weight_limit(siblings, incoming["weight"])
+            self._validate_weight_limit(siblings, incoming["weight"], criterion.group.grade_scale)
         for field, value in incoming.items():
             setattr(criterion, field, value)
         await self.repository.save_criterion(criterion)
@@ -145,13 +145,14 @@ class GroupService:
         if not group.criteria:
             raise ValidationError("At least one evaluation criterion is required before evaluation")
         total = round(sum(float(criterion.weight) for criterion in group.criteria), 2)
-        if total != 100:
-            raise ValidationError("Criteria weights must total exactly 100 before evaluation", {"total": total})
+        if total != group.grade_scale:
+            raise ValidationError(f"Criteria weights must total exactly {group.grade_scale} before evaluation", {"total": total, "expected": group.grade_scale})
 
-    def _validate_weight_limit(self, criteria: list[EvaluationCriterion], new_weight: float) -> None:
+    def _validate_weight_limit(self, criteria: list[EvaluationCriterion], new_weight: float, grade_scale: int = None) -> None:
         total = sum(float(item.weight) for item in criteria) + float(new_weight)
-        if total > 100:
-            raise ValidationError("Criteria weights cannot exceed 100", {"proposed_total": total})
+        max_weight = grade_scale if grade_scale else (criteria[0].group.grade_scale if criteria else 100)
+        if total > max_weight:
+            raise ValidationError(f"Criteria weights cannot exceed {max_weight}", {"proposed_total": total, "max": max_weight})
 
     def _get_group_storage_path(self, instructor_id: str, group_id: str) -> Path:
         return get_settings().storage_root / instructor_id / group_id

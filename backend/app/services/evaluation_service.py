@@ -18,6 +18,7 @@ from app.services.evaluation_batch_runner import EvaluationBatchRunner
 from app.services.group_service import GroupService
 from app.services.provider_service import ProviderService
 from app.services.usage_limit_service import UsageLimitService
+from app.utils.evaluation_response_audit import append_points_breakdown_to_feedback
 from app.utils.prompt_builder import build_evaluation_prompt
 from app.utils.token_estimator import estimate_tokens
 
@@ -125,6 +126,39 @@ class EvaluationService:
         await self.submission_repository.save_submission(submission)
         try:
             normalized = await adapter.evaluate_submission(evaluation_input)
+            criteria_by_order = list(group.criteria)
+            normalized_by_name = {}
+            for item in normalized.criterion_scores:
+                key = item.criterion_name.strip().casefold()
+                if not key:
+                    raise ValidationError("Provider response included a criterion score without a criterion_name")
+                if key in normalized_by_name:
+                    raise ValidationError(
+                        f"Provider response included duplicate criterion score: {item.criterion_name}"
+                    )
+                normalized_by_name[key] = item
+            expected_criterion_names = {
+                criterion.name.strip().casefold() for criterion in criteria_by_order
+            }
+            extra_criteria = [
+                item.criterion_name
+                for item in normalized.criterion_scores
+                if item.criterion_name.strip().casefold() not in expected_criterion_names
+            ]
+            if extra_criteria:
+                raise ValidationError(
+                    "Provider response included unrecognized criteria: " + ", ".join(extra_criteria)
+                )
+            missing_criteria = [
+                criterion.name
+                for criterion in criteria_by_order
+                if criterion.name.strip().casefold() not in normalized_by_name
+            ]
+            if missing_criteria:
+                raise ValidationError(
+                    "Provider response omitted criteria: " + ", ".join(missing_criteria)
+                )
+
             await self.evaluation_repository.clear_latest_flags(submission.id)
             evaluation_number = await self.evaluation_repository.next_evaluation_number(submission.id)
             evaluation_result = await self.evaluation_repository.create_result(
@@ -142,30 +176,24 @@ class EvaluationService:
                 )
             )
 
-            normalized_by_name = {
-                item.criterion_name.strip().casefold(): item for item in normalized.criterion_scores
-            }
-            criteria_by_order = list(group.criteria)
             created_scores: list[CriterionScore] = []
-            order_fallback = iter(normalized.criterion_scores)
             for criterion in criteria_by_order:
                 item = normalized_by_name.get(criterion.name.strip().casefold())
-                if item is None:
-                    item = next(order_fallback, None)
                 ai_score = self._normalize_provider_score(
-                    score=None if item is None else item.ai_score,
-                    earned_points=None if item is None else item.earned_points,
+                    score=item.ai_score,
+                    earned_points=item.earned_points,
                     criterion_weight=float(criterion.weight),
                     grade_scale=group.grade_scale,
                     is_manual=criterion.is_manual,
                 )
                 feedback = self._normalize_feedback_for_score(
-                    feedback=None if item is None else item.feedback,
+                    feedback=item.feedback,
                     ai_score=ai_score,
+                    criterion_weight=float(criterion.weight),
                     grade_scale=group.grade_scale,
                     is_manual=criterion.is_manual,
                     response_language=response_language,
-                    missing_provider_item=item is None,
+                    missing_provider_item=False,
                 )
                 created_score = await self.evaluation_repository.create_criterion_score(
                     CriterionScore(
@@ -404,10 +432,11 @@ class EvaluationService:
         score_items: list[CriterionScore] | None = None,
     ) -> float:
         criteria = {criterion.id: criterion for criterion in evaluation.submission.group.criteria}
+        grade_scale = evaluation.submission.group.grade_scale
         total = 0.0
         for score in score_items or evaluation.criterion_scores:
             criterion = criteria[score.criterion_id]
-            total += (float(criterion.weight) / 100.0) * float(score.ai_score or 0)
+            total += (float(criterion.weight) / grade_scale) * float(score.ai_score or 0)
         return round(total, 2)
 
     def _calculate_final_adjusted_score(
@@ -417,11 +446,12 @@ class EvaluationService:
         score_items: list[CriterionScore] | None = None,
     ) -> float:
         criteria = {criterion.id: criterion for criterion in evaluation.submission.group.criteria}
+        grade_scale = evaluation.submission.group.grade_scale
         total = 0.0
         for score in score_items or evaluation.criterion_scores:
             criterion = criteria[score.criterion_id]
             effective_score = score.manual_score if score.manual_score is not None else score.ai_score or 0
-            total += (float(criterion.weight) / 100.0) * float(effective_score)
+            total += (float(criterion.weight) / grade_scale) * float(effective_score)
         return round(total, 2)
 
     def _normalize_feedback_for_score(
@@ -429,21 +459,37 @@ class EvaluationService:
         *,
         feedback: str | None,
         ai_score: float | None,
+        criterion_weight: float,
         grade_scale: int,
         is_manual: bool,
         response_language: str,
         missing_provider_item: bool,
     ) -> str:
         cleaned = (feedback or "").strip()
-        if cleaned:
-            return cleaned
-
         is_arabic = response_language == "ar"
+        if cleaned:
+            return append_points_breakdown_to_feedback(
+                cleaned,
+                normalized_score=ai_score,
+                criterion_weight=criterion_weight,
+                grade_scale=grade_scale,
+                response_language=response_language,
+                is_manual=is_manual,
+            )
+
         if missing_provider_item:
-            return (
+            fallback = (
                 "لم يرجع مزود الذكاء الاصطناعي نتيجة لهذا المعيار، لذلك تم التعامل معه كغير مستوفى ويحتاج مراجعة."
                 if is_arabic
                 else "The AI provider did not return a result for this criterion, so it was treated as unmet and needs review."
+            )
+            return append_points_breakdown_to_feedback(
+                fallback,
+                normalized_score=ai_score,
+                criterion_weight=criterion_weight,
+                grade_scale=grade_scale,
+                response_language=response_language,
+                is_manual=is_manual,
             )
         if is_manual:
             return (
@@ -452,15 +498,31 @@ class EvaluationService:
                 else "This is a manual-only criterion and needs an instructor-entered score."
             )
         if ai_score is not None and ai_score >= float(grade_scale):
-            return (
+            fallback = (
                 "تم استيفاء المعيار بالكامل ولم يتم الخصم"
                 if is_arabic
                 else "Criterion fully met, no deductions"
             )
-        return (
+            return append_points_breakdown_to_feedback(
+                fallback,
+                normalized_score=ai_score,
+                criterion_weight=criterion_weight,
+                grade_scale=grade_scale,
+                response_language=response_language,
+                is_manual=is_manual,
+            )
+        fallback = (
             "تم الخصم لأن نتيجة المزود أشارت إلى أن هذا المعيار غير مستوفى بالكامل، لكن لم يرجع سبباً تفصيلياً كافياً."
             if is_arabic
             else "Points were deducted because the provider result marked this criterion as not fully met, but did not return enough detailed reasoning."
+        )
+        return append_points_breakdown_to_feedback(
+            fallback,
+            normalized_score=ai_score,
+            criterion_weight=criterion_weight,
+            grade_scale=grade_scale,
+            response_language=response_language,
+            is_manual=is_manual,
         )
 
     async def _log_usage(

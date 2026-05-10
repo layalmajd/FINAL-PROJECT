@@ -34,6 +34,10 @@ class SubmissionRepository:
         await self.session.flush()
         return submission
 
+    async def delete_submission(self, submission: Submission) -> None:
+        await self.session.delete(submission)
+        await self.session.flush()
+
     async def create_content_cache(self, cache: SubmissionContentCache) -> SubmissionContentCache:
         self.session.add(cache)
         await self.session.flush()
@@ -49,6 +53,7 @@ class SubmissionRepository:
             )
             .options(
                 selectinload(Submission.group).selectinload(AssignmentGroup.criteria),
+                selectinload(Submission.upload_batch),
                 selectinload(Submission.content_cache),
                 selectinload(Submission.evaluations),
             )

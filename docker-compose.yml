@@ -17,6 +17,8 @@ services:
   backend:
     build:
       context: ./backend
+      args:
+        BACKEND_BASE_IMAGE: final-project-main-backend-base:latest
     restart: unless-stopped
     depends_on:
       postgres:

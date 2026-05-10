@@ -90,6 +90,7 @@ class ManualAdjustmentRequest(BaseModel):
 
 class NormalizedCriterionEvaluation(BaseModel):
     criterion_name: str
+    earned_points: float | None = None
     ai_score: float | None
     feedback: str | None
 

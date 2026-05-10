@@ -119,6 +119,12 @@ export function updateSubmissionStudentId(submissionId: string, studentId: strin
   });
 }
 
+export function deleteSubmission(submissionId: string) {
+  return apiRequest<void>(`/submissions/${submissionId}`, {
+    method: "DELETE",
+  });
+}
+
 export function canEvaluateSubmission(status: SubmissionStatus, studentId?: string | null) {
   return Boolean(studentId?.trim()) && (status === "pending" || status === "failed" || status === "queued");
 }

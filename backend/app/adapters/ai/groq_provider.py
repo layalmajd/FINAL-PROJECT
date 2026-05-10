@@ -1,3 +1,4 @@
+import json
 import re
 
 from httpx import HTTPError, HTTPStatusError
@@ -103,11 +104,14 @@ class GroqProvider(BaseAIProvider):
                 )
             raise ExternalServiceError("Groq evaluation request failed before receiving a response")
 
-        content = self._extract_response_content(response)
-        parsed = self._parse_json_payload(content)
+        content = ""
         try:
-            parsed = self._validate_and_normalize_payload(parsed, payload)
-        except ValidationError as exc:
+            content = self._extract_response_content(response)
+            parsed = self._validate_and_normalize_payload(
+                self._parse_json_payload(content),
+                payload,
+            )
+        except (ValidationError, ValueError, TypeError, json.JSONDecodeError) as exc:
             retry_prompt = self._build_retry_prompt(
                 payload,
                 invalid_content=content,
@@ -173,6 +177,8 @@ class GroqProvider(BaseAIProvider):
         raw_scores = parsed.get("criterion_scores") if isinstance(parsed, dict) else None
         if not isinstance(raw_scores, list):
             raise ValidationError("Groq response must contain a criterion_scores array")
+        if any(not isinstance(item, dict) for item in raw_scores):
+            raise ValidationError("Groq criterion_scores items must be JSON objects")
         if not isinstance(parsed.get("summary_feedback"), str) or not parsed.get("summary_feedback", "").strip():
             raise ValidationError("Groq response must include a non-empty summary_feedback string")
 
@@ -192,19 +198,18 @@ class GroqProvider(BaseAIProvider):
                 None,
             )
             if match_index is None:
-                item = {}
-                missing_item = True
-            else:
-                item = unused_items.pop(match_index)
-                missing_item = False
-            normalized_score = self._coerce_score(item.get("ai_score"))
+                raise ValidationError(f"Groq response omitted criterion: {criterion.name}")
+
+            item = unused_items.pop(match_index)
+            earned_points = self._coerce_score(item.get("earned_points", item.get("points")))
+            normalized_score = None
+            if earned_points is not None and criterion.weight > 0:
+                bounded_points = max(0.0, min(float(earned_points), float(criterion.weight)))
+                normalized_score = (bounded_points / float(criterion.weight)) * payload.grade_scale
             if normalized_score is None:
-                earned_points = self._coerce_score(item.get("earned_points", item.get("points")))
-                if earned_points is not None and criterion.weight > 0:
-                    bounded_points = max(0.0, min(float(earned_points), float(criterion.weight)))
-                    normalized_score = (bounded_points / float(criterion.weight)) * payload.grade_scale
+                normalized_score = self._coerce_score(item.get("ai_score"))
             if not criterion.is_manual and normalized_score is None:
-                normalized_score = self._minimum_unscored_value(payload)
+                raise ValidationError(f"Groq response omitted numeric earned_points for criterion: {criterion.name}")
             if normalized_score is not None:
                 normalized_score = max(0.0, min(float(normalized_score), float(payload.grade_scale)))
 
@@ -227,7 +232,7 @@ class GroqProvider(BaseAIProvider):
             feedback = self._coerce_feedback(item.get("feedback")) or self._default_feedback(
                 criterion.name,
                 payload=payload,
-                missing_item=missing_item,
+                missing_item=False,
                 normalized_score=normalized_score,
             )
             feedback = append_audit_to_feedback(
@@ -243,18 +248,30 @@ class GroqProvider(BaseAIProvider):
                 response_language=payload.response_language,
             )
             feedback = append_cap_note(feedback, cap_note)
+            if normalized_score is not None and criterion.weight > 0:
+                earned_points = (normalized_score / float(payload.grade_scale)) * float(criterion.weight)
 
             if normalized_score is not None:
                 has_numeric_score = True
-                weighted_total += (criterion.weight / 100.0) * normalized_score
+                weighted_total += (criterion.weight / payload.grade_scale) * normalized_score
 
             normalized_scores.append(
                 {
                     "criterion_name": criterion.name,
+                    "earned_points": round(earned_points, 2) if earned_points is not None else None,
                     "ai_score": round(normalized_score, 2) if normalized_score is not None else None,
                     "feedback": feedback,
                     "requirements_audit": audit_items,
                 }
+            )
+
+        if unused_items:
+            extra_names = [
+                str(item.get("criterion_name", "")).strip() or "<missing criterion_name>"
+                for item in unused_items
+            ]
+            raise ValidationError(
+                "Groq response included unrecognized or duplicate criteria: " + ", ".join(extra_names)
             )
 
         if any(not criterion.is_manual for criterion in payload.criteria) and not has_numeric_score:
@@ -276,7 +293,10 @@ class GroqProvider(BaseAIProvider):
             cleaned = value.strip()
             if not cleaned:
                 return None
-            return float(cleaned)
+            try:
+                return float(cleaned)
+            except ValueError as exc:
+                raise ValidationError("Groq returned a non-numeric score value") from exc
         raise ValidationError("Groq returned an unsupported score type")
 
     def _coerce_feedback(self, value) -> str | None:
@@ -284,9 +304,6 @@ class GroqProvider(BaseAIProvider):
             return None
         text = str(value).strip()
         return text or None
-
-    def _minimum_unscored_value(self, payload: EvaluationInput) -> float:
-        return round(max(float(payload.grade_scale) * 0.01, 0.01), 2)
 
     def _default_feedback(
         self,
@@ -314,7 +331,7 @@ class GroqProvider(BaseAIProvider):
         submission_word_count = len(payload.submission_text.split())
         criteria_lines = "\n".join(
             [
-                f'- "{criterion.name}" | weight_percent={criterion.weight:.2f} | manual_only={"yes" if criterion.is_manual else "no"} | teacher_requirement={criterion.description or "No description provided."}'
+                f'- criterion_name="{criterion.name}" | max_points={criterion.weight:.2f} | manual_only={"yes" if criterion.is_manual else "no"} | teacher_requirement={criterion.description or "No description provided."}'
                 for criterion in payload.criteria
             ]
         )
@@ -339,11 +356,13 @@ Evaluation method:
 - If the submission explicitly says something is missing, not provided, not explained, or will be done later, treat that as evidence of absence.
 - Give proportional partial credit for explicit required parts that are present, even if other parts of the same criterion are missing.
 - Do not use all-or-nothing scoring unless the teacher explicitly says the criterion is binary/pass-fail.
-- If one criterion completely fails, deduct only that criterion's weighted contribution and continue scoring the other criteria independently.
-- Do not use 0 for an ordinary criterion unless the teacher explicitly says that a missing item receives 0, or the whole submission is blank/unrelated.
+- Return earned_points from 0 to that criterion's max_points. Do not return weighted percentages as earned_points.
+- If one criterion completely fails, give 0 earned_points for that criterion only and continue scoring the other criteria independently.
+- Use 0 earned_points for a criterion when the submission has no usable positive evidence for that criterion.
 - Keep partial credit calibrated: vague mentions get low partial credit; high scores require explicit, usable details for most required parts.
 - If an explicit requirement is missing, weak, incorrect, or unsupported, deduct proportionally and explain exactly what was missing.
 - Do not deduct for spelling, writing style, formatting, length, or presentation unless the teacher explicitly required that in the assignment description or criterion.
+- Use the exact criterion_name values from the Criteria section. Return every listed criterion exactly once.
 
 JSON shape:
 {{
@@ -352,6 +371,8 @@ JSON shape:
   "criterion_scores": [
     {{
       "criterion_name": "string",
+      "earned_points": number | null,
+      "deducted_points": number | null,
       "ai_score": number | null,
       "feedback": "string",
       "requirements_audit": [
@@ -395,14 +416,15 @@ Reason:
 Return the evaluation again as JSON only.
 
 Critical corrections:
-- Do not output earned_points.
-- Use ai_score only, on the 0 to {payload.grade_scale} scale.
-- total_score must exactly equal the weighted total calculated from all criterion ai_score values.
+- Use earned_points for each criterion, on the 0 to max_points scale shown for that criterion.
+- Do not put weighted percentages in earned_points.
+- ai_score may be null or omitted, but if present it must be consistent with earned_points normalized to 0 to {payload.grade_scale}.
+- total_score may be null because the system recomputes the final total.
 - If the feedback says most requirements are met, do not give a 50% score unless the criterion is only partially met.
-- Give 100% for any criterion that fully satisfies its stated requirements.
+- Give full earned_points for any criterion that fully satisfies its stated requirements.
 - Do not give a high score for a criterion if one of its explicit required parts is missing.
 - Do give partial credit when some required parts are present. Do not turn a partially met criterion into 0.
-- Do not use 0 unless the teacher explicitly says this missing item receives 0, or the whole submission is blank/unrelated.
+- Use 0 earned_points when the submission has no usable positive evidence for that criterion. This only affects that criterion.
 - If a criterion is completely failed, only that criterion should lose its weighted contribution; the other criteria must still be scored normally.
 - Do not give 70%+ for a criterion based on vague mentions. High scores require explicit, usable details.
 - Every criterion must have specific feedback tied to the teacher assignment description or criterion.
